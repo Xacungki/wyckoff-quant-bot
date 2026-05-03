@@ -29,6 +29,34 @@ class WyckoffVSASignal:
         df['Is_Exhaustion_Signal'] = condition_near_support & condition_low_volume
         return df[df['Is_Exhaustion_Signal'] == True]
 
+    def identify_trading_range(self, df):
+        """
+        Tìm kiếm Selling Climax (SC) và xác định Biên trên/dưới của Trading Range.
+        """
+        if len(df) < 50:
+            return None, None
+            
+        df['Vol_MA_20'] = df['Volume'].rolling(window=20).mean()
+        df['Is_SC'] = (df['Volume'] > df['Vol_MA_20'] * 2.5) & (df['Close'] < df['Open'])
+        
+        recent_data = df.tail(60)
+        sc_candles = recent_data[recent_data['Is_SC'] == True]
+        
+        if sc_candles.empty:
+            return None, None
+            
+        sc_date = sc_candles['Volume'].idxmax()
+        sc_index = df.index.get_loc(sc_date)
+        
+        tr_bottom = df['Low'].iloc[sc_index:sc_index+3].min()
+        
+        if sc_index + 15 < len(df):
+            tr_top = df['High'].iloc[sc_index+1:sc_index+16].max()
+        else:
+            tr_top = df['High'].iloc[sc_index+1:].max()
+            
+        return tr_top, tr_bottom
+
 # ==========================================
 # KHỐI 3 (MỚI): QUẢN TRỊ CƠ SỞ DỮ LIỆU ĐÁM MÂY
 # ==========================================
@@ -115,22 +143,55 @@ class MarketScanner:
 # KHỐI 5: KÍCH HOẠT HỆ THỐNG
 # ==========================================
 if __name__ == "__main__":
-    print("🚀 Bắt đầu chạy Lõi Quét tự động từ GitHub Actions...")
+    print("🚀 Bắt đầu chạy Lõi Quét tự động...")
     
-    # 1. Lấy danh sách cấu hình từ Database
-    db = init_firebase() # Gọi hàm kết nối có sẵn
-    doc_ref = db.collection("system_config").document("watchlist")
-    doc = doc_ref.get()
-    
-    if doc.exists:
-        my_portfolio = doc.to_dict().get("tickers", [])
-    else:
-        # Fallback an toàn nếu chưa có db
-        my_portfolio = ["FPT.VN", "VNM.VN", "AAPL", "NUS"] 
+    # Lấy danh sách cấu hình từ Database
+    try:
+        db = init_firebase() # Đảm bảo bạn đã có hàm này ở trên
+        doc_ref = db.collection("system_config").document("watchlist")
+        doc = doc_ref.get()
+        my_portfolio = doc.to_dict().get("tickers", []) if doc.exists else ["FPT.VN", "VNM.VN", "AAPL"]
+    except:
+        my_portfolio = ["FPT.VN", "VNM.VN", "AAPL", "NUS"]
         
     print(f"📊 Đang tiến hành quét {len(my_portfolio)} mã: {my_portfolio}")
     
-    # 2. Khởi động Lõi
-    scanner = MarketScanner(watchlist=my_portfolio)
-    scanner.run_daily_scan(start_date="2025-01-01", end_date="2026-05-04")
-    scanner.generate_report()
+    vsa_engine = WyckoffVSASignal() # Khởi tạo bộ máy phân tích
+    
+    for ticker in my_portfolio:
+        try:
+            # 1. Kéo dữ liệu
+            fetcher = QuantDataFetcher(ticker)
+            df = fetcher.fetch_daily_data("2025-01-01", "2026-05-04")
+            
+            if df is not None and not df.empty:
+                current_price = df['Close'].iloc[-1]
+                
+                # 2. Quét tìm Khung giá (Trading Range)
+                tr_top, tr_bottom = vsa_engine.identify_trading_range(df)
+                
+                # Bỏ qua nếu mã này chưa từng có nhịp bán tháo (chưa có SC)
+                if tr_top is None or tr_bottom is None:
+                    continue 
+                
+                # 3. Quét tín hiệu Cạn cung theo logic cũ của bạn
+                # (Sửa tên biến is_spring cho phù hợp với cách hàm của bạn trả về kết quả)
+                is_spring = vsa_engine.detect_supply_exhaustion(df, current_price) 
+                
+                # 4. BỘ LỌC KÉP: Có Spring VÀ giá phải nằm ở đáy TR (hoặc đâm thủng nhẹ giả mạo)
+                if is_spring and (current_price <= tr_bottom * 1.05):
+                    signal_data = {
+                        "Date_Detected": df.index[-1].strftime('%Y-%m-%d'),
+                        "Ticker": ticker,
+                        "Price": float(current_price),
+                        "Signal_Type": "Cạn cung (Spring) trong Trading Range",
+                        "TR_Top": float(tr_top),
+                        "TR_Bottom": float(tr_bottom),
+                        "Status": "Mới phát hiện"
+                    }
+                    print(f"🔥 Phát hiện {ticker} cạn cung tại vùng Đáy của Smart Money!")
+                    # Đẩy lên Firestore 
+                    db.collection("wyckoff_signals").add(signal_data)
+                    
+        except Exception as e:
+            print(f"Lỗi khi quét {ticker}: {e}")
