@@ -29,12 +29,20 @@ class WyckoffVSASignal:
         df['Is_Exhaustion_Signal'] = condition_near_support & condition_low_volume
         return df[df['Is_Exhaustion_Signal'] == True]
 
-    def identify_trading_range(self, df):
-        """
-        Tìm kiếm Selling Climax (SC) và xác định Biên trên/dưới của Trading Range.
-        """
+    def identify_trading_range(self, df, sys_params):
         if len(df) < 50:
             return None, None
+            
+        ma_period = sys_params.get("vol_ma_period", 20)
+        sc_mult = sys_params.get("sc_vol_multiplier", 2.5)
+        
+        df['Vol_MA'] = df['Volume'].rolling(window=ma_period).mean()
+        df['Is_SC'] = (df['Volume'] > df['Vol_MA'] * sc_mult) & (df['Close'] < df['Open'])
+        
+        recent_data = df.tail(60)
+        sc_candles = recent_data[recent_data['Is_SC'] == True]
+        
+        # ... (Phần logic tìm đáy và đỉnh của bạn ở dưới giữ nguyên) ...
             
         df['Vol_MA_20'] = df['Volume'].rolling(window=20).mean()
         df['Is_SC'] = (df['Volume'] > df['Vol_MA_20'] * 2.5) & (df['Close'] < df['Open'])
@@ -153,6 +161,22 @@ if __name__ == "__main__":
         my_portfolio = doc.to_dict().get("tickers", []) if doc.exists else ["FPT.VN", "VNM.VN", "AAPL"]
     except:
         my_portfolio = ["FPT.VN", "VNM.VN", "AAPL", "NUS"]
+        # ... (code lấy my_portfolio cũ giữ nguyên) ...
+    
+    # --- LẤY BỘ THÔNG SỐ ĐIỀU KHIỂN TỪ FIRESTORE ---
+    param_ref = db.collection("system_config").document("wyckoff_params")
+    param_doc = param_ref.get()
+    if param_doc.exists:
+        sys_params = param_doc.to_dict()
+    else:
+        sys_params = {
+            "vol_ma_period": 20, 
+            "sc_vol_multiplier": 2.5, 
+            "spring_vol_ratio": 0.5, 
+            "spring_price_tolerance": 1.05
+        }
+    print(f"⚙️ Áp dụng thông số cấu hình: {sys_params}")
+    # -----------------------------------------------
         
     print(f"📊 Đang tiến hành quét {len(my_portfolio)} mã: {my_portfolio}")
     
