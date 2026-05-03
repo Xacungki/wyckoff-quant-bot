@@ -18,17 +18,17 @@ st.set_page_config(page_title="Wyckoff Quant Radar PRO", layout="wide", page_ico
 st.markdown("""<style>.stApp { background-color: #FAF9F6; color: #333333; } h1 { color: #1A1A1A; border-bottom: 2px solid #D4AF37; padding-bottom: 10px; } .stDataFrame { box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05); border-radius: 8px; } div[data-testid="stMetricValue"] { color: #D4AF37; }</style>""", unsafe_allow_html=True)
 
 SECTORS = {
-    "🏦 Ngân hàng": ["VCB.VN", "BID.VN", "CTG.VN", "TCB.VN", "VPB.VN", "MBB.VN", "ACB.VN", "STB.VN", "HDB.VN", "VIB.VN", "TPB.VN", "SHB.VN", "EIB.VN", "MSB.VN", "OCB.VN", "LPB.VN"],
-    "🏢 Bất động sản": ["VHM.VN", "VIC.VN", "VRE.VN", "NVL.VN", "DIG.VN", "DXG.VN", "KDH.VN", "NLG.VN", "PDR.VN", "CEO.VN", "HDG.VN", "DXS.VN", "CRE.VN", "SZC.VN", "KBC.VN", "IDC.VN"],
-    "📈 Chứng khoán": ["SSI.VN", "VND.VN", "VCI.VN", "HCM.VN", "SHS.VN", "MBS.VN", "VIX.VN", "FTS.VN", "BSI.VN", "CTS.VN", "AGR.VN"],
-    "🏭 Thép & Vật liệu": ["HPG.VN", "HSG.VN", "NKG.VN", "HT1.VN", "BCC.VN", "POM.VN", "SMC.VN", "VGC.VN", "BMP.VN"],
-    "🛒 Bán lẻ & Tiêu dùng": ["MWG.VN", "PNJ.VN", "FRT.VN", "DGW.VN", "PET.VN", "HAX.VN", "VNM.VN", "MSN.VN", "SAB.VN"],
-    "💻 Công nghệ & Viễn thông": ["FPT.VN", "CMG.VN", "ELC.VN", "ITD.VN", "VGI.VN", "CTR.VN", "FOX.VN"],
-    "⚡ Năng lượng": ["GAS.VN", "POW.VN", "PLX.VN", "PVD.VN", "PVS.VN", "NT2.VN", "GEG.VN", "PC1.VN", "REE.VN"],
-    "📦 Cảng & Logistics": ["GMD.VN", "HAH.VN", "VSC.VN", "SGP.VN", "MVN.VN", "VOS.VN", "PVT.VN"],
-    "🐟 Nông Lâm Thủy Sản": ["VHC.VN", "ANV.VN", "FMC.VN", "DBC.VN", "HAG.VN", "BAF.VN", "LTG.VN", "TAR.VN", "PAN.VN", "IDI.VN"],
-    "🏗️ Xây dựng & Đầu tư công": ["VCG.VN", "HHV.VN", "C4G.VN", "LCG.VN", "FCN.VN", "HBC.VN", "CTD.VN", "HUT.VN"],
-    "💊 Y tế & Hóa chất": ["DGC.VN", "DPM.VN", "DCM.VN", "CSV.VN", "DHG.VN", "IMP.VN", "DBD.VN"]
+    "🏦 Ngân hàng": ["VCB", "BID", "CTG", "TCB", "VPB", "MBB", "ACB", "STB", "HDB", "VIB", "TPB", "SHB", "EIB", "MSB", "OCB", "LPB"],
+    "🏢 Bất động sản": ["VHM", "VIC", "VRE", "NVL", "DIG", "DXG", "KDH", "NLG", "PDR", "CEO", "HDG", "DXS", "CRE", "SZC", "KBC", "IDC"],
+    "📈 Chứng khoán": ["SSI", "VND", "VCI", "HCM", "SHS", "MBS", "VIX", "FTS", "BSI", "CTS", "AGR"],
+    "🏭 Thép & Vật liệu": ["HPG", "HSG", "NKG", "HT1", "BCC", "POM", "SMC", "VGC", "BMP"],
+    "🛒 Bán lẻ & Tiêu dùng": ["MWG", "PNJ", "FRT", "DGW", "PET", "HAX", "VNM", "MSN", "SAB"],
+    "💻 Công nghệ & Viễn thông": ["FPT", "CMG", "ELC", "ITD", "VGI", "CTR", "FOX"],
+    "⚡ Năng lượng": ["GAS", "POW", "PLX", "PVD", "PVS", "NT2", "GEG", "PC1", "REE"],
+    "📦 Cảng & Logistics": ["GMD", "HAH", "VSC", "SGP", "MVN", "VOS", "PVT"],
+    "🐟 Nông Lâm Thủy Sản": ["VHC", "ANV", "FMC", "DBC", "HAG", "BAF", "LTG", "TAR", "PAN", "IDI"],
+    "🏗️ Xây dựng & Đầu tư công": ["VCG", "HHV", "C4G", "LCG", "FCN", "HBC", "CTD", "HUT"],
+    "💊 Y tế & Hóa chất": ["DGC", "DPM", "DCM", "CSV", "DHG", "IMP", "DBD"]
 }
 
 TICKER_TO_SECTOR = {}
@@ -55,7 +55,7 @@ except Exception as e: st.error("Lỗi Database"); st.stop()
 st.sidebar.markdown("### ⚙️ Quản lý Danh mục")
 doc_ref = db.collection("system_config").document("watchlist")
 doc = doc_ref.get()
-current_watchlist = doc.to_dict().get("tickers", []) if doc.exists else ["FPT.VN"]
+current_watchlist = doc.to_dict().get("tickers", []) if doc.exists else ["FPT"]
 
 if st.sidebar.button("🌐 THÊM TOÀN THỊ TRƯỜNG (TOP 100)"):
     doc_ref.set({"tickers": list(TICKER_TO_SECTOR.keys())})
@@ -63,8 +63,9 @@ if st.sidebar.button("🌐 THÊM TOÀN THỊ TRƯỜNG (TOP 100)"):
 
 new_ticker = st.sidebar.text_input("Thêm mã đơn lẻ:")
 if st.sidebar.button("➕ Thêm Mã") and new_ticker:
-    if new_ticker.upper() not in current_watchlist:
-        current_watchlist.append(new_ticker.upper())
+    clean_ticker = new_ticker.upper().replace(".VN", "").strip()
+    if clean_ticker not in current_watchlist:
+        current_watchlist.append(clean_ticker)
         doc_ref.set({"tickers": current_watchlist})
         st.rerun()
 
@@ -97,9 +98,21 @@ st.title("Trạm Radar Tín Hiệu Định Lượng PRO 🌟")
 @st.cache_data(ttl=60)
 def load_signals():
     docs = db.collection('wyckoff_signals').order_by('Date_Detected', direction=firestore.Query.DESCENDING).limit(100).stream()
-    return pd.DataFrame([doc.to_dict() for doc in docs])
+    df = pd.DataFrame([doc.to_dict() for doc in docs])
+    
+    # 🔥 BƯỚC VÁ LỖI QUAN TRỌNG: Tự động điền các cột thiếu cho dữ liệu cũ để chống crash
+    if not df.empty:
+        expected_cols = {
+            'Rating_Score': 50, 'RS_Score': 0, 'POC_Level': 0, 'Trailing_Stop': 0, 
+            'Take_Profit_1': 0, 'Take_Profit_2': 0, 'Weekly_Trend': 'N/A', 'VSA_Tags': ''
+        }
+        for col, default_val in expected_cols.items():
+            if col not in df.columns:
+                df[col] = default_val
+    return df
 
 df_signals = load_signals()
+
 col1, col2, col3 = st.columns(3)
 col1.metric("Tổng Tín Hiệu", len(df_signals))
 col2.metric("🟢 Khuyến Nghị MUA", len(df_signals[df_signals['Signal_Type'].str.contains("Mua", na=False)]) if not df_signals.empty else 0)
@@ -108,30 +121,29 @@ col3.metric("🔴 Cảnh Báo BÁN", len(df_signals[df_signals['Signal_Type'].st
 @st.cache_data
 def convert_df_to_csv(df): return df.to_csv(index=False).encode('utf-8-sig')
 
-tab_radar, tab_heatmap, tab_scan_chart, tab_alerts = st.tabs(["📡 Radar Chấm Điểm AI", "🗺️ Bản Đồ Dòng Tiền", "🚀 Quét & Biểu Đồ POC", "🤖 Bot Telegram"])
+# THÊM TAB QUẢN TRỊ VỐN VÀ NHẬT KÝ
+tab_radar, tab_heatmap, tab_scan_chart, tab_capital, tab_alerts = st.tabs(["📡 Radar Chấm Điểm AI", "🗺️ Bản Đồ Dòng Tiền", "🚀 Quét & Biểu Đồ POC", "🧮 Quản Trị Vốn & Nhật Ký", "🤖 Bot Telegram"])
 
 with tab_radar:
     st.markdown("### Danh sách Báo cáo & Chấm Điểm Toàn Diện")
     if not df_signals.empty:
         df_display = df_signals.copy()
         
-        # BỘ LỌC SIÊU CỔ PHIẾU
         show_super_only = st.checkbox("🔥 Chỉ Lọc Các Siêu Cổ Phiếu (Rating >= 80)")
         if show_super_only:
             df_display = df_display[df_display['Rating_Score'] >= 80]
             
         if not df_display.empty:
-            df_display['Nhóm Ngành'] = df_display['Ticker'].apply(lambda x: TICKER_TO_SECTOR.get(x, "Khác"))
+            df_display['Nhóm Ngành'] = df_display['Ticker'].apply(lambda x: TICKER_TO_SECTOR.get(x.replace(".VN", ""), "Khác"))
             
-            # Format UI
             formatted_data = []
             for _, sig in df_display.iterrows():
                 ticker = sig.get("Ticker", "")
-                is_vn = ".VN" in ticker or ".HM" in ticker or ".HN" in ticker
                 entry = sig.get("Price", 0)
-                sl = sig.get("Trailing_Stop", entry * 0.98) # Sử dụng ATR Stoploss
-                tp = sig.get("TR_Top", 0)
+                sl = sig.get("Trailing_Stop", entry * 0.98) 
                 rating = sig.get("Rating_Score", 50)
+                tp1 = sig.get("Take_Profit_1", 0)
+                tp2 = sig.get("Take_Profit_2", 0)
                 
                 sig_type = sig.get("Signal_Type", "")
                 if "Mua" in sig_type: sig_type = f"🟢 {sig_type}"
@@ -143,8 +155,9 @@ with tab_radar:
                     "Ngành": sig.get("Nhóm Ngành", ""),
                     "Rating /100": f"{rating} đ",
                     "Tín Hiệu": sig_type,
-                    "Cắt Lỗ ATR": f"{sl:,.0f}" if is_vn else f"${sl:,.2f}",
-                    "Hỗ trợ Hút tiền (POC)": f"{sig.get('POC_Level', 0):,.0f}" if is_vn and sig.get('POC_Level') else "-",
+                    "Cắt Lỗ ATR": f"{sl:,.0f}" if entry > 1000 else f"${sl:,.2f}",
+                    "Chốt lời (TP1 - TP2)": f"{tp1:,.0f} - {tp2:,.0f}" if entry > 1000 else f"${tp1:,.2f} - ${tp2:,.2f}",
+                    "Hỗ trợ Hút tiền (POC)": f"{sig.get('POC_Level', 0):,.0f}" if entry > 1000 and sig.get('POC_Level') else "-",
                     "Trend Tuần": f"📈" if "TĂNG" in str(sig.get("Weekly_Trend", "")) else f"📉",
                     "VSA_Tags": sig.get("VSA_Tags", "")
                 })
@@ -163,8 +176,7 @@ with tab_heatmap:
     if not df_signals.empty:
         df_buy = df_signals[df_signals['Signal_Type'].str.contains("Mua", na=False, case=False)].copy()
         if not df_buy.empty:
-            df_buy['Sector'] = df_buy['Ticker'].apply(lambda x: TICKER_TO_SECTOR.get(x, "Khác"))
-            # SỬ DỤNG RATING_SCORE CHO ĐỘ LỚN BẢN ĐỒ
+            df_buy['Sector'] = df_buy['Ticker'].apply(lambda x: TICKER_TO_SECTOR.get(x.replace(".VN", ""), "Khác"))
             fig_tree = px.treemap(df_buy, path=[px.Constant("Thị Trường"), 'Sector', 'Ticker'], values='Rating_Score', color='RS_Score', color_continuous_scale='RdYlGn')
             st.plotly_chart(fig_tree, use_container_width=True)
 
@@ -203,6 +215,9 @@ with tab_scan_chart:
                         poc_val = vsa_engine.calculate_poc(df, tr_bottom, tr_top)
                         trailing_stop = round(current_price - (1.5 * atr_val), 2) if atr_val else 0
 
+                        tp1 = round(current_price + (tr_top - current_price) * 0.5, 2)
+                        tp2 = round(tr_top, 2)
+
                         rating = 50
                         if rs_score > 0: rating += min(rs_score, 20)
                         if weekly_trend == "TĂNG (Uptrend)": rating += 15
@@ -213,13 +228,15 @@ with tab_scan_chart:
                             "Date_Detected": df.index[-1].strftime('%Y-%m-%d'), "Ticker": ticker, "Price": current_price,
                             "Signal_Type": signal_type, "TR_Top": tr_top, "TR_Bottom": tr_bottom, "RS_Score": rs_score,
                             "Weekly_Trend": weekly_trend, "VSA_Tags": vsa_tags, "Rating_Score": rating, 
-                            "Trailing_Stop": trailing_stop, "POC_Level": poc_val, "Timestamp": firestore.SERVER_TIMESTAMP
+                            "Trailing_Stop": trailing_stop, "POC_Level": poc_val, 
+                            "Take_Profit_1": tp1, "Take_Profit_2": tp2,
+                            "Timestamp": firestore.SERVER_TIMESTAMP
                         })
                         signals_found += 1
             except: error_count += 1
             progress_bar.progress((i + 1) / len(current_watchlist))
             
-        status_text.success(f"✅ Quét xong! Tìm thấy {signals_found} tín hiệu. Mù dữ liệu: {error_count} mã.")
+        status_text.success(f"✅ Quét xong! Tìm thấy {signals_found} tín hiệu. Bỏ qua do rác/thanh khoản kém: {error_count} mã.")
         st.cache_data.clear() 
 
     st.markdown("### 📈 Biểu Đồ Volume Profile & POC")
@@ -243,7 +260,6 @@ with tab_scan_chart:
                 if tr_top and tr_bottom:
                     fig.add_hline(y=tr_top, line_dash="dash", line_color="green", annotation_text="Kháng cự", row=1, col=1)
                     fig.add_hline(y=tr_bottom, line_dash="dash", line_color="red", annotation_text="Hỗ trợ", row=1, col=1)
-                    # VẼ ĐƯỜNG POC MÀU VÀNG (DÒNG TIỀN GOM NHIỀU NHẤT)
                     poc_val = vsa_engine.calculate_poc(df_chart, tr_bottom, tr_top)
                     if poc_val:
                         fig.add_hline(y=poc_val, line_dash="dot", line_color="gold", annotation_text="POC (Lõi Dòng Tiền)", row=1, col=1)
@@ -254,9 +270,53 @@ with tab_scan_chart:
                 fig.update_layout(title=f"VSA & Dòng tiền: {selected_chart_ticker}", yaxis_title="Giá", xaxis_rangeslider_visible=False, height=600, template="plotly_dark")
                 st.plotly_chart(fig, use_container_width=True)
 
+# TÍNH NĂNG MỚI: QUẢN TRỊ VỐN VÀ NHẬT KÝ
+with tab_capital:
+    st.markdown("### 🧮 Máy Tính Đi Lệnh Chuyên Nghiệp (Position Sizing)")
+    st.info("Nhập số vốn để AI tính ra chính xác bạn nên mua bao nhiêu cổ phiếu để không bao giờ phá sản dù thị trường sập.")
+    
+    col_a, col_b = st.columns(2)
+    with col_a:
+        capital = st.number_input("Tổng vốn đầu tư (VND):", value=100000000, step=10000000)
+        risk_pct = st.slider("Rủi ro tối đa cho phép / 1 Lệnh (%):", min_value=0.5, max_value=5.0, value=2.0, step=0.1)
+    with col_b:
+        entry_price = st.number_input("Giá Mua dự kiến:", value=50000, step=100)
+        stop_loss = st.number_input("Giá Cắt Lỗ (SL):", value=47000, step=100)
+        
+    if entry_price > stop_loss > 0:
+        risk_per_share = entry_price - stop_loss
+        max_loss_amount = capital * (risk_pct / 100)
+        shares_to_buy = int(max_loss_amount / risk_per_share)
+        total_investment = shares_to_buy * entry_price
+        
+        st.success(f"🎯 **KHUYẾN NGHỊ:** Bạn nên mua tối đa **{shares_to_buy:,.0f} Cổ phiếu**.")
+        st.write(f"- 💵 Cần giải ngân: **{total_investment:,.0f} VND** (Chiếm {(total_investment/capital)*100:.1f}% tài khoản)")
+        st.write(f"- 🛡️ Nếu bị quét Cắt lỗ, bạn chỉ mất: **{max_loss_amount:,.0f} VND** (Đúng chuẩn {risk_pct}% rủi ro)")
+    elif stop_loss >= entry_price:
+        st.warning("⚠️ Giá Cắt Lỗ phải nhỏ hơn Giá Mua dự kiến.")
+
+    st.markdown("---")
+    st.markdown("### 📔 Sổ Nhật Ký Giao Dịch Đám Mây")
+    with st.form("journal_form"):
+        j_ticker = st.text_input("Mã Cổ Phiếu:")
+        j_note = st.text_area("Ghi chú lý do Mua/Bán (Bài học):")
+        if st.form_submit_button("Lưu Vào Nhật Ký"):
+            if j_ticker:
+                db.collection("trading_journal").add({
+                    "Ticker": j_ticker.upper(), "Note": j_note,
+                    "Date": datetime.now().strftime('%Y-%m-%d %H:%M')
+                })
+                st.success("✅ Đã lưu nhật ký thành công!")
+                st.rerun()
+                
+    journal_docs = db.collection("trading_journal").order_by("Date", direction=firestore.Query.DESCENDING).limit(10).stream()
+    for doc in journal_docs:
+        item = doc.to_dict()
+        st.write(f"📅 **{item.get('Date')} | {item.get('Ticker')}**: {item.get('Note')}")
+
 with tab_alerts:
     st.markdown("### 🤖 Tích Hợp Bot Cảnh Báo Telegram")
-    st.write("Hệ thống Lõi (khi chạy tự động trên Github Actions) sẽ tự động gửi thông báo các mã đạt chuẩn về điện thoại của bạn.")
+    st.write("Hệ thống Lõi sẽ tự động gửi thông báo các mã Siêu cổ phiếu đạt chuẩn về điện thoại của bạn.")
     
     tele_ref = db.collection("system_config").document("telegram")
     tele_doc = tele_ref.get()
