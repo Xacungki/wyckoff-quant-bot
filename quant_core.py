@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import firebase_admin
 from firebase_admin import credentials, firestore
+import time
 
 # ==========================================
 # KHỐI 1: LẤY DỮ LIỆU
@@ -71,7 +72,6 @@ class WyckoffVSASignal:
         
         is_low_volume = latest_vol < (latest_sma * vol_ratio)
         
-        # Đã Sửa Lỗi Crash: Trả về một Boolean thay vì DataFrame
         return is_near_support and is_low_volume
 
 # ==========================================
@@ -90,7 +90,6 @@ class FirestoreManager:
             self.db = None
 
     def push_signal(self, signal_data):
-        """Bắn dữ liệu lên collection ĐỒNG NHẤT 'wyckoff_signals'"""
         if not self.db: return
         try:
             doc_ref = self.db.collection('wyckoff_signals').document()
@@ -104,7 +103,6 @@ class FirestoreManager:
 if __name__ == "__main__":
     print("🚀 Bắt đầu chạy Lõi Quét tự động...")
     
-    # 1. Kết nối DB
     db_manager = FirestoreManager()
     db = db_manager.db
     
@@ -112,7 +110,6 @@ if __name__ == "__main__":
         print("[!] Không thể kết nối Database. Dừng chương trình.")
         exit()
         
-    # 2. Lấy Watchlist
     try:
         doc_ref = db.collection("system_config").document("watchlist")
         doc = doc_ref.get()
@@ -120,7 +117,6 @@ if __name__ == "__main__":
     except:
         my_portfolio = ["FPT.VN", "VNM.VN", "AAPL", "NUS"]
     
-    # 3. Lấy Params
     try:
         param_ref = db.collection("system_config").document("wyckoff_params")
         param_doc = param_ref.get()
@@ -136,32 +132,34 @@ if __name__ == "__main__":
     print(f"⚙️ Áp dụng thông số cấu hình: {sys_params}")
     print(f"📊 Đang tiến hành quét {len(my_portfolio)} mã: {my_portfolio}")
     
-    vsa_engine = WyckoffVSASignal() # Khởi tạo bộ máy phân tích
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=365)
     
-    import time # Chèn thêm thư viện thời gian
-
+    vsa_engine = WyckoffVSASignal(sys_params)
+    
     for ticker in my_portfolio:
         try:
-            time.sleep(0.5) # Nghỉ nửa giây giữa mỗi mã để tránh bị Yahoo Finance khóa IP
-            
-            # 1. Kéo dữ liệu
+            time.sleep(0.3) # Tạm nghỉ để tránh bị chặn IP
             fetcher = QuantDataFetcher(ticker)
             df = fetcher.fetch_daily_data(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
             
             if df is not None and not df.empty:
                 current_price = float(df['Close'].iloc[-1])
                 
-                # Quét tìm Khung giá
                 tr_top, tr_bottom = vsa_engine.identify_trading_range(df)
                 
-                # Bỏ qua nếu mã này chưa từng có nhịp bán tháo
                 if tr_top is None or tr_bottom is None:
                     continue 
                 
-                # Quét tín hiệu Cạn cung
                 is_spring = vsa_engine.detect_supply_exhaustion(df, current_price, tr_bottom) 
                 
                 if is_spring:
+                    # BỔ SUNG: Tính điểm RS Sức Mạnh Dòng Tiền (Dựa trên hiệu suất 60 ngày)
+                    rs_score = 0
+                    if len(df) >= 60:
+                        price_60d = float(df['Close'].iloc[-60])
+                        rs_score = round(((current_price - price_60d) / price_60d) * 100, 2)
+                        
                     signal_data = {
                         "Date_Detected": df.index[-1].strftime('%Y-%m-%d'),
                         "Ticker": ticker,
@@ -169,10 +167,11 @@ if __name__ == "__main__":
                         "Signal_Type": "Cạn cung (Spring) trong Trading Range",
                         "TR_Top": float(tr_top),
                         "TR_Bottom": float(tr_bottom),
+                        "RS_Score": rs_score, # Bắn chỉ số RS lên Cloud
                         "Status": "Mới phát hiện",
                         "Timestamp": firestore.SERVER_TIMESTAMP
                     }
-                    print(f"🔥 Phát hiện {ticker} cạn cung tại vùng Đáy của Smart Money!")
+                    print(f"🔥 Phát hiện {ticker} cạn cung | RS Sức mạnh: {rs_score}%")
                     db_manager.push_signal(signal_data)
                     
         except Exception as e:
