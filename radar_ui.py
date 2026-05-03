@@ -1,14 +1,21 @@
 import streamlit as st
 import pandas as pd
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import firebase_admin
 from firebase_admin import credentials, firestore
+
+# Thêm thư viện vẽ Biểu đồ
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+# Nhập (Import) 2 Class từ Lõi Quét để tái sử dụng ngay trên Web
+from quant_core import QuantDataFetcher, WyckoffVSASignal
 
 # ==========================================
 # 1. CẤU HÌNH GIAO DIỆN LIGHT LUXURY
 # ==========================================
-st.set_page_config(page_title="Wyckoff Quant Radar", layout="wide")
+st.set_page_config(page_title="Wyckoff Quant Radar", layout="wide", page_icon="📡")
 
 st.markdown("""
     <style>
@@ -16,11 +23,12 @@ st.markdown("""
         h1 { color: #1A1A1A; border-bottom: 2px solid #D4AF37; padding-bottom: 10px; font-family: 'Helvetica Neue', sans-serif; }
         .stDataFrame { box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05); border-radius: 8px; overflow: hidden; }
         div[data-testid="stMetricValue"] { color: #D4AF37; }
+        .stButton>button { border: 1px solid #D4AF37; border-radius: 5px; font-weight: bold; }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# BỘ TỪ ĐIỂN CỔ PHIẾU THEO NGÀNH (MỚI)
+# BỘ TỪ ĐIỂN CỔ PHIẾU THEO NGÀNH
 # ==========================================
 SECTORS = {
     "🏦 Ngân hàng": ["VCB.VN", "BID.VN", "CTG.VN", "TCB.VN", "VPB.VN", "MBB.VN", "ACB.VN", "STB.VN", "HDB.VN", "VIB.VN", "TPB.VN", "SHB.VN", "EIB.VN", "MSB.VN", "OCB.VN", "LPB.VN"],
@@ -37,10 +45,9 @@ SECTORS = {
     "💊 Y tế & Hóa chất": ["DGC.VN", "DPM.VN", "DCM.VN", "CSV.VN", "DHG.VN", "IMP.VN", "DBD.VN"]
 }
 
-# Tạo bộ tra cứu ngược (Mã -> Tên Ngành) để hiển thị trong Bảng
 TICKER_TO_SECTOR = {}
 for sector_name, tickers in SECTORS.items():
-    clean_name = sector_name.split(" ", 1)[1] # Cắt bỏ icon emoji
+    clean_name = sector_name.split(" ", 1)[1]
     for t in tickers:
         TICKER_TO_SECTOR[t] = clean_name
 
@@ -65,31 +72,24 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# MODULE: QUẢN LÝ DANH MỤC (WATCHLIST)
+# MODULE: QUẢN LÝ DANH MỤC
 # ==========================================
 st.sidebar.markdown("### ⚙️ Quản lý Danh mục")
 
 doc_ref = db.collection("system_config").document("watchlist")
 doc = doc_ref.get()
 
-if not doc.exists:
-    current_watchlist = ["FPT.VN", "VNM.VN", "AAPL", "NUS"]
-    doc_ref.set({"tickers": current_watchlist})
-else:
-    current_watchlist = doc.to_dict().get("tickers", [])
+current_watchlist = doc.to_dict().get("tickers", []) if doc.exists else ["FPT.VN", "VNM.VN", "AAPL"]
 
-# TÍNH NĂNG 1: Thêm 1 mã lẻ
-new_ticker = st.sidebar.text_input("Thêm mã đơn lẻ (VD: VIC.VN):")
+new_ticker = st.sidebar.text_input("Thêm mã đơn lẻ:")
 if st.sidebar.button("➕ Thêm Mã"):
     if new_ticker and new_ticker.upper() not in current_watchlist:
         current_watchlist.append(new_ticker.upper())
-        doc_ref.update({"tickers": current_watchlist})
+        doc_ref.set({"tickers": current_watchlist})
         st.rerun()
 
-# TÍNH NĂNG 2: Thêm tự động cả Ngành
 st.sidebar.markdown("---")
-st.sidebar.markdown("**Lọc tự động theo Ngành:**")
-selected_sector = st.sidebar.selectbox("Chọn nhóm ngành:", list(SECTORS.keys()))
+selected_sector = st.sidebar.selectbox("Lọc tự động theo Ngành:", list(SECTORS.keys()))
 if st.sidebar.button("📥 Thêm toàn bộ Ngành này"):
     added_count = 0
     for t in SECTORS[selected_sector]:
@@ -98,18 +98,15 @@ if st.sidebar.button("📥 Thêm toàn bộ Ngành này"):
             added_count += 1
     
     if added_count > 0:
-        doc_ref.update({"tickers": current_watchlist})
-        st.sidebar.success(f"Đã thêm {added_count} mã ngành {selected_sector.split(' ', 1)[1]}!")
+        doc_ref.set({"tickers": current_watchlist})
+        st.sidebar.success(f"Đã thêm {added_count} mã ngành!")
         st.rerun()
-    else:
-        st.sidebar.info("Toàn bộ mã ngành này đã có sẵn.")
 
-# TÍNH NĂNG 3: Xóa & Xem Danh sách
 st.sidebar.markdown("---")
 st.sidebar.markdown(f"**Đang rà soát: {len(current_watchlist)} mã**")
 
 if st.sidebar.button("🗑️ XÓA TOÀN BỘ DANH SÁCH"):
-    doc_ref.update({"tickers": []})
+    doc_ref.set({"tickers": []})
     st.rerun()
 
 with st.sidebar.expander("Xem chi tiết các mã đang quét", expanded=False):
@@ -118,7 +115,7 @@ with st.sidebar.expander("Xem chi tiết các mã đang quét", expanded=False):
         col1.write(f"📈 {ticker}")
         if col2.button("❌", key=f"del_{ticker}"):
             current_watchlist.remove(ticker)
-            doc_ref.update({"tickers": current_watchlist})
+            doc_ref.set({"tickers": current_watchlist})
             st.rerun()
 
 # ==========================================
@@ -130,13 +127,9 @@ st.sidebar.markdown("### 🎛️ Bảng Điều Khiển Wyckoff")
 param_ref = db.collection("system_config").document("wyckoff_params")
 param_doc = param_ref.get()
 
-if not param_doc.exists:
-    current_params = {
-        "vol_ma_period": 20, "sc_vol_multiplier": 2.5, "spring_vol_ratio": 0.5, "spring_price_tolerance": 1.05
-    }
-    param_ref.set(current_params)
-else:
-    current_params = param_doc.to_dict()
+current_params = param_doc.to_dict() if param_doc.exists else {
+    "vol_ma_period": 20, "sc_vol_multiplier": 2.5, "spring_vol_ratio": 0.5, "spring_price_tolerance": 1.05
+}
 
 with st.sidebar.form("param_form"):
     new_ma = st.number_input("Chu kỳ MA Khối lượng", min_value=10, max_value=50, value=int(current_params.get("vol_ma_period", 20)))
@@ -145,18 +138,18 @@ with st.sidebar.form("param_form"):
     new_tolerance = st.slider("Độ lệch giá tại đáy cho phép (%)", 1.0, 10.0, float((current_params.get("spring_price_tolerance", 1.05) - 1) * 100), 0.5)
 
     if st.form_submit_button("Lưu Cấu Hình"):
-        param_ref.update({
+        current_params = {
             "vol_ma_period": new_ma, "sc_vol_multiplier": new_sc_mult,
             "spring_vol_ratio": new_spring_vol, "spring_price_tolerance": 1 + (new_tolerance / 100)
-        })
+        }
+        param_ref.set(current_params)
         st.success("✅ Đã cập nhật tham số!")
         st.rerun()
 
 # ==========================================
-# MODULE: GIAO DIỆN CHÍNH (MAIN DASHBOARD)
+# GIAO DIỆN CHÍNH (MAIN DASHBOARD)
 # ==========================================
 st.title("Trạm Radar Tín Hiệu Định Lượng")
-st.markdown("Hệ thống tự động theo dõi và bóc tách các điểm cạn kiệt nguồn cung (Spring) dựa trên mô hình Wyckoff VSA.")
 
 @st.cache_data(ttl=60)
 def load_signals():
@@ -172,8 +165,10 @@ latest_date = df_signals['Date_Detected'].iloc[0] if not df_signals.empty else "
 col1.metric("Tổng Tín Hiệu Phát Hiện", total_signals)
 col2.metric("Ngày Cập Nhật Gần Nhất", latest_date)
 
-tab_radar, tab_knowledge = st.tabs(["📡 Radar Tín Hiệu", "🧠 Trạm Nạp Kiến Thức"])
+# THÊM TAB 2: QUÉT & BIỂU ĐỒ
+tab_radar, tab_scan_chart, tab_knowledge = st.tabs(["📡 Radar Tín Hiệu", "🚀 Quét Chủ Động & Biểu Đồ", "🧠 Trạm Nạp Kiến Thức"])
 
+# --- TAB 1: RADAR ---
 with tab_radar:
     st.markdown("### Danh sách Báo cáo Chi tiết")
     
@@ -193,7 +188,7 @@ with tab_radar:
             
             ticker = sig.get("Ticker", "")
             is_vn = ".VN" in ticker or ".HM" in ticker or ".HN" in ticker
-            sector = TICKER_TO_SECTOR.get(ticker, "Khác") # Dò Tên Ngành
+            sector = TICKER_TO_SECTOR.get(ticker, "Khác")
             
             data.append({
                 "Ngày": sig.get("Date_Detected", ""),
@@ -210,10 +205,98 @@ with tab_radar:
     else:
         st.info("Hiện chưa có tín hiệu mới nào đạt chuẩn.")
 
+# --- TAB 2: QUÉT CHỦ ĐỘNG & BIỂU ĐỒ (MỚI) ---
+with tab_scan_chart:
+    st.markdown("### 🚀 Quét Thị Trường Trực Tiếp")
+    st.write("Kích hoạt lõi AI định lượng để rà soát ngay lập tức danh mục hiện tại (Không cần đợi tự động).")
+    
+    if st.button("▶️ KHỞI CHẠY MÁY QUÉT NGAY LẬP TỨC", use_container_width=True):
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        signals_found = 0
+        
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=365)
+        vsa_engine = WyckoffVSASignal(current_params)
+        
+        for i, ticker in enumerate(current_watchlist):
+            status_text.text(f"Đang phân tích: {ticker}...")
+            try:
+                # Gọi Core logic
+                fetcher = QuantDataFetcher(ticker)
+                df = fetcher.fetch_daily_data(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
+                
+                if df is not None and not df.empty:
+                    current_price = float(df['Close'].iloc[-1])
+                    tr_top, tr_bottom = vsa_engine.identify_trading_range(df)
+                    
+                    if tr_top is not None and tr_bottom is not None:
+                        is_spring = vsa_engine.detect_supply_exhaustion(df, current_price, tr_bottom)
+                        if is_spring:
+                            signal_data = {
+                                "Date_Detected": df.index[-1].strftime('%Y-%m-%d'),
+                                "Ticker": ticker,
+                                "Price": float(current_price),
+                                "Signal_Type": "Cạn cung (Spring) tại Hỗ trợ",
+                                "TR_Top": float(tr_top),
+                                "TR_Bottom": float(tr_bottom),
+                                "Status": "Mới phát hiện",
+                                "Timestamp": firestore.SERVER_TIMESTAMP
+                            }
+                            db.collection('wyckoff_signals').add(signal_data)
+                            signals_found += 1
+            except Exception as e:
+                pass
+                
+            progress_bar.progress((i + 1) / len(current_watchlist))
+            
+        status_text.success(f"✅ Quét hoàn tất! Tìm thấy {signals_found} tín hiệu mới. Hệ thống đã cập nhật bảng Radar.")
+        st.cache_data.clear() # Xóa cache để làm mới bảng Tab 1
+
+    st.markdown("---")
+    st.markdown("### 📈 Biểu Đồ Cấu Trúc Wyckoff Trực Quan")
+    st.write("Chọn mã cổ phiếu bất kỳ trong danh mục để AI tự động vẽ Khung giá (Trading Range) và Khối lượng.")
+    
+    selected_chart_ticker = st.selectbox("Chọn mã cổ phiếu:", current_watchlist)
+    
+    if selected_chart_ticker:
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=365)
+        
+        with st.spinner("Đang tải dữ liệu biểu đồ..."):
+            fetcher = QuantDataFetcher(selected_chart_ticker)
+            df_chart = fetcher.fetch_daily_data(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
+            
+            if df_chart is not None and not df_chart.empty:
+                vsa_engine = WyckoffVSASignal(current_params)
+                tr_top, tr_bottom = vsa_engine.identify_trading_range(df_chart)
+                
+                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
+                
+                # Biểu đồ Nến (Candlestick)
+                fig.add_trace(go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'], low=df_chart['Low'], close=df_chart['Close'], name="Giá"), row=1, col=1)
+                
+                # Vẽ Kháng cự / Hỗ trợ (Nếu AI tìm thấy)
+                if tr_top and tr_bottom:
+                    fig.add_hline(y=tr_top, line_dash="dash", line_color="green", annotation_text="Kháng cự (AR)", row=1, col=1)
+                    fig.add_hline(y=tr_bottom, line_dash="dash", line_color="red", annotation_text="Hỗ trợ (Spring)", row=1, col=1)
+                
+                # Vẽ MA200 (Kiểm tra xu hướng)
+                df_chart['MA200'] = df_chart['Close'].rolling(window=200).mean()
+                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MA200'], line=dict(color='orange', width=1.5), name="MA200"), row=1, col=1)
+                
+                # Vẽ Volume
+                colors = ['red' if row['Close'] < row['Open'] else 'green' for index, row in df_chart.iterrows()]
+                fig.add_trace(go.Bar(x=df_chart.index, y=df_chart['Volume'], marker_color=colors, name="Khối lượng"), row=2, col=1)
+                
+                fig.update_layout(title=f"Cấu trúc VSA & Dòng tiền: {selected_chart_ticker}", yaxis_title="Giá", xaxis_rangeslider_visible=False, height=600, template="plotly_white")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("Không lấy được dữ liệu nến cho mã này.")
+
+# --- TAB 3: KIẾN THỨC ---
 with tab_knowledge:
     st.subheader("🧠 Huấn luyện Tư duy cho AI")
-    st.info("Nạp thêm link bài phân tích hoặc quy tắc mới để AI tự động nâng cấp bộ lọc thẩm định.")
-    
     web_link = st.text_input("Dán link tài liệu (TradingView, Sách online, Bài báo...):")
     link_note = st.text_area("Ghi chú nhanh cho AI về link này (Không bắt buộc):")
     
