@@ -7,8 +7,8 @@ from firebase_admin import credentials, firestore
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
+import requests
 
-# CHÍNH NHỜ LỆNH NÀY MÀ FILE UI RẤT NHỎ GỌN (Gọi não bộ từ quant_core sang)
 from quant_core import QuantDataFetcher, WyckoffVSASignal
 
 # ==========================================
@@ -92,7 +92,7 @@ with st.sidebar.form("param_form"):
 # ==========================================
 # MAIN UI
 # ==========================================
-st.title("Trạm Radar Tín Hiệu Định Lượng PRO")
+st.title("Trạm Radar Tín Hiệu Định Lượng PRO 🌟")
 
 @st.cache_data(ttl=60)
 def load_signals():
@@ -106,24 +106,66 @@ col2.metric("🟢 Khuyến Nghị MUA", len(df_signals[df_signals['Signal_Type']
 col3.metric("🔴 Cảnh Báo BÁN", len(df_signals[df_signals['Signal_Type'].str.contains("Bán", na=False)]) if not df_signals.empty else 0)
 
 @st.cache_data
-def convert_df_to_csv(df):
-    return df.to_csv(index=False).encode('utf-8-sig')
+def convert_df_to_csv(df): return df.to_csv(index=False).encode('utf-8-sig')
 
-tab_radar, tab_heatmap, tab_scan_chart = st.tabs(["📡 Radar Đa Khung", "🗺️ Bản Đồ Dòng Tiền", "🚀 Quét & Biểu Đồ VSA"])
+tab_radar, tab_heatmap, tab_scan_chart, tab_alerts = st.tabs(["📡 Radar Chấm Điểm AI", "🗺️ Bản Đồ Dòng Tiền", "🚀 Quét & Biểu Đồ POC", "🤖 Bot Telegram"])
 
 with tab_radar:
+    st.markdown("### Danh sách Báo cáo & Chấm Điểm Toàn Diện")
     if not df_signals.empty:
         df_display = df_signals.copy()
-        df_display['Nhóm Ngành'] = df_display['Ticker'].apply(lambda x: TICKER_TO_SECTOR.get(x, "Khác"))
-        st.dataframe(df_display[['Date_Detected', 'Ticker', 'Nhóm Ngành', 'Signal_Type', 'Price', 'TR_Top', 'TR_Bottom', 'RS_Score', 'Weekly_Trend', 'VSA_Tags']], use_container_width=True, hide_index=True)
+        
+        # BỘ LỌC SIÊU CỔ PHIẾU
+        show_super_only = st.checkbox("🔥 Chỉ Lọc Các Siêu Cổ Phiếu (Rating >= 80)")
+        if show_super_only:
+            df_display = df_display[df_display['Rating_Score'] >= 80]
+            
+        if not df_display.empty:
+            df_display['Nhóm Ngành'] = df_display['Ticker'].apply(lambda x: TICKER_TO_SECTOR.get(x, "Khác"))
+            
+            # Format UI
+            formatted_data = []
+            for _, sig in df_display.iterrows():
+                ticker = sig.get("Ticker", "")
+                is_vn = ".VN" in ticker or ".HM" in ticker or ".HN" in ticker
+                entry = sig.get("Price", 0)
+                sl = sig.get("Trailing_Stop", entry * 0.98) # Sử dụng ATR Stoploss
+                tp = sig.get("TR_Top", 0)
+                rating = sig.get("Rating_Score", 50)
+                
+                sig_type = sig.get("Signal_Type", "")
+                if "Mua" in sig_type: sig_type = f"🟢 {sig_type}"
+                elif "Bán" in sig_type: sig_type = f"🔴 {sig_type}"
+                
+                formatted_data.append({
+                    "Ngày": sig.get("Date_Detected", ""),
+                    "Mã CK": f"🌟 {ticker}" if rating >= 80 else ticker,
+                    "Ngành": sig.get("Nhóm Ngành", ""),
+                    "Rating /100": f"{rating} đ",
+                    "Tín Hiệu": sig_type,
+                    "Cắt Lỗ ATR": f"{sl:,.0f}" if is_vn else f"${sl:,.2f}",
+                    "Hỗ trợ Hút tiền (POC)": f"{sig.get('POC_Level', 0):,.0f}" if is_vn and sig.get('POC_Level') else "-",
+                    "Trend Tuần": f"📈" if "TĂNG" in str(sig.get("Weekly_Trend", "")) else f"📉",
+                    "VSA_Tags": sig.get("VSA_Tags", "")
+                })
+
+            df_show = pd.DataFrame(formatted_data)
+            c1, c2 = st.columns([4, 1])
+            with c1: st.info("💡 **Rating /100:** AI đánh giá tổng hợp điểm sức mạnh. Các mã trên 80 điểm (🌟) là các mã có dòng tiền, xu hướng và VSA đẹp nhất. Dùng **Cắt Lỗ ATR** để gồng lãi.")
+            with c2: st.download_button("📥 Tải Báo Cáo", data=convert_df_to_csv(df_show), file_name=f"Wyckoff_Pro_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv", use_container_width=True)
+            st.dataframe(df_show, use_container_width=True, hide_index=True)
+        else:
+            st.info("Không có mã nào đạt chuẩn Siêu cổ phiếu lúc này.")
     else: st.info("Chưa có tín hiệu.")
 
 with tab_heatmap:
+    st.markdown("### 🗺️ Bản Đồ Nhiệt Dòng Tiền (Theo Rating Điểm Số)")
     if not df_signals.empty:
         df_buy = df_signals[df_signals['Signal_Type'].str.contains("Mua", na=False, case=False)].copy()
         if not df_buy.empty:
             df_buy['Sector'] = df_buy['Ticker'].apply(lambda x: TICKER_TO_SECTOR.get(x, "Khác"))
-            fig_tree = px.treemap(df_buy, path=[px.Constant("Thị Trường"), 'Sector', 'Ticker'], values='RS_Score', color='RS_Score', color_continuous_scale='RdYlGn')
+            # SỬ DỤNG RATING_SCORE CHO ĐỘ LỚN BẢN ĐỒ
+            fig_tree = px.treemap(df_buy, path=[px.Constant("Thị Trường"), 'Sector', 'Ticker'], values='Rating_Score', color='RS_Score', color_continuous_scale='RdYlGn')
             st.plotly_chart(fig_tree, use_container_width=True)
 
 with tab_scan_chart:
@@ -154,21 +196,33 @@ with tab_scan_chart:
                 if tr_top is not None:
                     signal_type = vsa_engine.detect_advanced_signals(df, current_price, tr_top, tr_bottom)
                     if signal_type:
+                        rs_score = round(((current_price - float(df['Close'].iloc[-60])) / float(df['Close'].iloc[-60])) * 100, 2)
+                        weekly_trend = vsa_engine.check_weekly_trend(df)
+                        vsa_tags = vsa_engine.get_vsa_tags(df)
+                        atr_val = vsa_engine.calculate_atr(df)
+                        poc_val = vsa_engine.calculate_poc(df, tr_bottom, tr_top)
+                        trailing_stop = round(current_price - (1.5 * atr_val), 2) if atr_val else 0
+
+                        rating = 50
+                        if rs_score > 0: rating += min(rs_score, 20)
+                        if weekly_trend == "TĂNG (Uptrend)": rating += 15
+                        if "No Supply" in vsa_tags or "Stopping Vol" in vsa_tags: rating += 15
+                        rating = int(min(max(rating, 0), 100))
+
                         db.collection('wyckoff_signals').add({
                             "Date_Detected": df.index[-1].strftime('%Y-%m-%d'), "Ticker": ticker, "Price": current_price,
-                            "Signal_Type": signal_type, "TR_Top": tr_top, "TR_Bottom": tr_bottom, 
-                            "RS_Score": round(((current_price - float(df['Close'].iloc[-60])) / float(df['Close'].iloc[-60])) * 100, 2),
-                            "Weekly_Trend": vsa_engine.check_weekly_trend(df), "VSA_Tags": vsa_engine.get_vsa_tags(df),
-                            "Timestamp": firestore.SERVER_TIMESTAMP
+                            "Signal_Type": signal_type, "TR_Top": tr_top, "TR_Bottom": tr_bottom, "RS_Score": rs_score,
+                            "Weekly_Trend": weekly_trend, "VSA_Tags": vsa_tags, "Rating_Score": rating, 
+                            "Trailing_Stop": trailing_stop, "POC_Level": poc_val, "Timestamp": firestore.SERVER_TIMESTAMP
                         })
                         signals_found += 1
             except: error_count += 1
             progress_bar.progress((i + 1) / len(current_watchlist))
             
-        status_text.success(f"✅ Quét xong! Tìm thấy {signals_found} tín hiệu. Bị mù dữ liệu: {error_count} mã.")
+        status_text.success(f"✅ Quét xong! Tìm thấy {signals_found} tín hiệu. Mù dữ liệu: {error_count} mã.")
         st.cache_data.clear() 
 
-    st.markdown("### 📈 Biểu Đồ Cấu Trúc Wyckoff Trực Quan")
+    st.markdown("### 📈 Biểu Đồ Volume Profile & POC")
     selected_chart_ticker = st.selectbox("Chọn mã cổ phiếu xem Chart:", current_watchlist)
     
     if selected_chart_ticker:
@@ -189,13 +243,36 @@ with tab_scan_chart:
                 if tr_top and tr_bottom:
                     fig.add_hline(y=tr_top, line_dash="dash", line_color="green", annotation_text="Kháng cự", row=1, col=1)
                     fig.add_hline(y=tr_bottom, line_dash="dash", line_color="red", annotation_text="Hỗ trợ", row=1, col=1)
-                
+                    # VẼ ĐƯỜNG POC MÀU VÀNG (DÒNG TIỀN GOM NHIỀU NHẤT)
+                    poc_val = vsa_engine.calculate_poc(df_chart, tr_bottom, tr_top)
+                    if poc_val:
+                        fig.add_hline(y=poc_val, line_dash="dot", line_color="gold", annotation_text="POC (Lõi Dòng Tiền)", row=1, col=1)
+
                 colors = ['red' if row['Close'] < row['Open'] else 'green' for index, row in df_chart.iterrows()]
                 fig.add_trace(go.Bar(x=df_chart.index, y=df_chart['Volume'], marker_color=colors, name="Khối lượng"), row=2, col=1)
-                
-                # Nối liền biểu đồ không bị đứt đoạn cuối tuần
                 fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
-                fig.update_layout(title=f"VSA & Dòng tiền: {selected_chart_ticker}", yaxis_title="Giá", xaxis_rangeslider_visible=False, height=600, template="plotly_white")
+                fig.update_layout(title=f"VSA & Dòng tiền: {selected_chart_ticker}", yaxis_title="Giá", xaxis_rangeslider_visible=False, height=600, template="plotly_dark")
                 st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.error(f"❌ KHÔNG CÓ DỮ LIỆU. Thư viện vnstock bị chặn lấy mã {selected_chart_ticker}.")
+
+with tab_alerts:
+    st.markdown("### 🤖 Tích Hợp Bot Cảnh Báo Telegram")
+    st.write("Hệ thống Lõi (khi chạy tự động trên Github Actions) sẽ tự động gửi thông báo các mã đạt chuẩn về điện thoại của bạn.")
+    
+    tele_ref = db.collection("system_config").document("telegram")
+    tele_doc = tele_ref.get()
+    tele_data = tele_doc.to_dict() if tele_doc.exists else {"bot_token": "", "chat_id": ""}
+    
+    with st.form("tele_form"):
+        bot_token = st.text_input("Bot Token (Lấy từ @BotFather):", value=tele_data.get("bot_token", ""))
+        chat_id = st.text_input("Chat ID của bạn (Lấy từ @userinfobot):", value=tele_data.get("chat_id", ""))
+        
+        if st.form_submit_button("Lưu Cấu Hình & Gửi Test"):
+            tele_ref.set({"bot_token": bot_token, "chat_id": chat_id})
+            if bot_token and chat_id:
+                try:
+                    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                    res = requests.post(url, json={"chat_id": chat_id, "text": "✅ Trạm Radar Wyckoff đã kết nối thành công!"})
+                    if res.status_code == 200: st.success("Đã gửi tin nhắn test thành công tới Telegram!")
+                    else: st.error("Lỗi: Kiểm tra lại Token hoặc Chat ID.")
+                except Exception as e: st.error(f"Lỗi mạng: {e}")
+            st.rerun()
