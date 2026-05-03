@@ -1,224 +1,164 @@
 import yfinance as yf
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-# --- KHỐI 1: LẤY DỮ LIỆU (Giữ nguyên) ---
+# ==========================================
+# KHỐI 1: KẾT NỐI DATABASE & CẤU HÌNH
+# ==========================================
+def init_firebase():
+    if not firebase_admin._apps:
+        cred = credentials.Certificate("firebase_key.json")
+        firebase_admin.initialize_app(cred)
+    return firestore.client()
+
+# ==========================================
+# KHỐI 2: XỬ LÝ DỮ LIỆU
+# ==========================================
 class QuantDataFetcher:
     def __init__(self, ticker):
-        self.ticker = ticker
+        self.original_ticker = ticker
+        # Yahoo Finance dùng .HM cho sàn HOSE, .HN cho HNX. Map tạm thời nếu người dùng nhập .VN
+        self.yf_ticker = ticker.replace(".VN", ".HM") 
 
     def fetch_daily_data(self, start_date, end_date):
-        df = yf.download(self.ticker, start=start_date, end=end_date, interval="1d", progress=False)
+        df = yf.download(self.yf_ticker, start=start_date, end=end_date, interval="1d", progress=False)
         if df.empty: return None
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         return df[['Open', 'High', 'Low', 'Close', 'Volume']]
 
-# --- KHỐI 2: LOGIC WYCKOFF (Giữ nguyên) ---
+# ==========================================
+# KHỐI 3: LOGIC WYCKOFF VSA NÂNG CAO
+# ==========================================
 class WyckoffVSASignal:
-    def __init__(self, volume_ma_period=20):
-        self.volume_ma_period = volume_ma_period
+    def __init__(self, sys_params):
+        self.params = sys_params
 
-    def detect_supply_exhaustion(self, df, current_price):
-        support_level = current_price * 0.95 
-        df['Vol_SMA'] = df['Volume'].rolling(window=self.volume_ma_period).mean()
-        condition_near_support = (df['Close'] >= support_level) & (df['Close'] <= current_price * 1.05)
-        condition_low_volume = df['Volume'] < (df['Vol_SMA'] * 0.6)
-        df['Is_Exhaustion_Signal'] = condition_near_support & condition_low_volume
-        return df[df['Is_Exhaustion_Signal'] == True]
-
-    def identify_trading_range(self, df, sys_params):
-        if len(df) < 50:
+    def identify_trading_range(self, df):
+        if len(df) < 60:
             return None, None
             
-        ma_period = sys_params.get("vol_ma_period", 20)
-        sc_mult = sys_params.get("sc_vol_multiplier", 2.5)
+        ma_period = self.params.get("vol_ma_period", 20)
+        sc_mult = self.params.get("sc_vol_multiplier", 2.5)
         
+        # Tìm Selling Climax (Nến giảm mạnh + Volume đột biến)
         df['Vol_MA'] = df['Volume'].rolling(window=ma_period).mean()
         df['Is_SC'] = (df['Volume'] > df['Vol_MA'] * sc_mult) & (df['Close'] < df['Open'])
         
-        recent_data = df.tail(60)
-        sc_candles = recent_data[recent_data['Is_SC'] == True]
-        
-        # ... (Phần logic tìm đáy và đỉnh của bạn ở dưới giữ nguyên) ...
-            
-        df['Vol_MA_20'] = df['Volume'].rolling(window=20).mean()
-        df['Is_SC'] = (df['Volume'] > df['Vol_MA_20'] * 2.5) & (df['Close'] < df['Open'])
-        
-        recent_data = df.tail(60)
+        recent_data = df.tail(60) # Xét trong 3 tháng gần nhất
         sc_candles = recent_data[recent_data['Is_SC'] == True]
         
         if sc_candles.empty:
             return None, None
             
+        # Lấy ngày xảy ra SC có Volume lớn nhất
         sc_date = sc_candles['Volume'].idxmax()
         sc_index = df.index.get_loc(sc_date)
         
-        tr_bottom = df['Low'].iloc[sc_index:sc_index+3].min()
+        # Xác định TR_Bottom (Đáy) từ SC
+        # Đáy có thể là giá thấp nhất trong 3 phiên quanh SC
+        tr_bottom = df['Low'].iloc[sc_index:min(sc_index+4, len(df))].min()
         
-        if sc_index + 15 < len(df):
-            tr_top = df['High'].iloc[sc_index+1:sc_index+16].max()
+        # Xác định TR_Top (Đỉnh Automatic Rally)
+        # Đỉnh là điểm phục hồi cao nhất trong khoảng 15-20 phiên sau SC
+        if sc_index + 20 < len(df):
+            tr_top = df['High'].iloc[sc_index+1:sc_index+21].max()
         else:
             tr_top = df['High'].iloc[sc_index+1:].max()
             
-        return tr_top, tr_bottom
+        return float(tr_top), float(tr_bottom)
 
-# ==========================================
-# KHỐI 3 (MỚI): QUẢN TRỊ CƠ SỞ DỮ LIỆU ĐÁM MÂY
-# ==========================================
-class FirestoreManager:
-    def __init__(self, key_path="firebase_key.json"):
-        """Khởi tạo kết nối bảo mật với Google Cloud Firestore"""
-        try:
-            cred = credentials.Certificate(key_path)
-            # Kiểm tra xem app đã khởi tạo chưa để tránh lỗi chạy nhiều lần
-            if not firebase_admin._apps:
-                firebase_admin.initialize_app(cred)
-            self.db = firestore.client()
-            print("[+] Đã kết nối thành công tới Database Đám mây!")
-        except Exception as e:
-            print(f"[!] Lỗi kết nối Database: {e}")
-            self.db = None
+    def detect_supply_exhaustion(self, df, current_price, tr_bottom):
+        ma_period = self.params.get("vol_ma_period", 20)
+        vol_ratio = self.params.get("spring_vol_ratio", 0.5)
+        tolerance = self.params.get("spring_price_tolerance", 1.05)
 
-    def push_signal(self, signal_data):
-        """Bắn 1 gói dữ liệu tín hiệu lên bộ sưu tập 'vsa_signals'"""
-        if not self.db: return
+        # 1. Điều kiện giá: Nằm sát vùng đáy (TR_Bottom)
+        is_near_support = current_price <= (tr_bottom * tolerance)
         
-        try:
-            # Tạo một document mới với ID tự động sinh
-            doc_ref = self.db.collection('vsa_signals').document()
-            doc_ref.set(signal_data)
-        except Exception as e:
-            print(f"Lỗi khi đẩy dữ liệu mã {signal_data.get('Ticker')}: {e}")
-
-# ==========================================
-# KHỐI 4: TRẠM ĐIỀU PHỐI TỔNG THỂ (Đã nâng cấp)
-# ==========================================
-class MarketScanner:
-    def __init__(self, watchlist):
-        self.watchlist = watchlist
-        self.vsa_logic = WyckoffVSASignal()
-        self.db_manager = FirestoreManager() # Gọi Khối Database vào làm việc
-        self.report = []
-
-    def run_daily_scan(self, start_date, end_date):
-        print(f"\n🚀 BẮT ĐẦU QUÉT HỆ THỐNG: {len(self.watchlist)} MÃ CỔ PHIẾU...")
+        # 2. Điều kiện Volume: Volume hiện tại cạn kiệt so với trung bình
+        df['Vol_SMA'] = df['Volume'].rolling(window=ma_period).mean()
+        latest_vol = df['Volume'].iloc[-1]
+        latest_sma = df['Vol_SMA'].iloc[-1]
         
-        for ticker in self.watchlist:
-            print(f"  -> Đang phân tích: {ticker}")
-            fetcher = QuantDataFetcher(ticker)
-            df = fetcher.fetch_daily_data(start_date, end_date)
-            
-            if df is not None and not df.empty:
-                current_price = float(df['Close'].iloc[-1])
-                signals = self.vsa_logic.detect_supply_exhaustion(df, current_price)
-                
-                if not signals.empty:
-                    latest_signal = signals.iloc[-1]
-                    
-                    # 1. Đóng gói dữ liệu chuẩn bị gửi lên mây
-                    signal_package = {
-                        "Ticker": ticker,
-                        "Price": round(float(latest_signal['Close']), 2),
-                        "Date_Detected": str(signals.index[-1].strftime('%Y-%m-%d')),
-                        "Signal_Type": "Cạn cung (Spring)",
-                        "Status": "Mới phát hiện",
-                        "Timestamp": firestore.SERVER_TIMESTAMP # Lưu thời gian thực tế đẩy lên
-                    }
-                    
-                    # 2. Đẩy lên Firestore
-                    self.db_manager.push_signal(signal_package)
-                    
-                    # 3. Lưu vào báo cáo tạm thời để in ra màn hình
-                    self.report.append(signal_package)
-
-    def generate_report(self):
-        print("\n" + "="*50)
-        print("📊 ĐÃ ĐỒNG BỘ LÊN ĐÁM MÂY & BÁO CÁO NGÀY:", datetime.now().strftime('%Y-%m-%d'))
-        print("="*50)
-        if not self.report:
-            print("[!] Không phát hiện tín hiệu bất thường nào.")
-        else:
-            report_df = pd.DataFrame(self.report)
-            # Ẩn cột Timestamp khi in ra Terminal cho đỡ rối mắt
-            print(report_df.drop(columns=['Timestamp']).to_string(index=False))
-        print("="*50 + "\n")
-
+        is_low_volume = latest_vol < (latest_sma * vol_ratio)
+        
+        # Trả về boolean thay vì DataFrame để tránh lỗi Logic
+        return is_near_support and is_low_volume
 
 # ==========================================
-# KHỐI 5: KÍCH HOẠT HỆ THỐNG
+# KHỐI 4: VẬN HÀNH CHÍNH (CRON-JOB)
 # ==========================================
-if __name__ == "__main__":
-    print("🚀 Bắt đầu chạy Lõi Quét tự động...")
+def main():
+    print("🚀 Bắt đầu chạy Lõi Quét Wyckoff tự động...")
+    db = init_firebase()
     
-    # Lấy danh sách cấu hình từ Database
-    try:
-        db = init_firebase() # Đảm bảo bạn đã có hàm này ở trên
-        doc_ref = db.collection("system_config").document("watchlist")
-        doc = doc_ref.get()
-        my_portfolio = doc.to_dict().get("tickers", []) if doc.exists else ["FPT.VN", "VNM.VN", "AAPL"]
-    except:
-        my_portfolio = ["FPT.VN", "VNM.VN", "AAPL", "NUS"]
-        # ... (code lấy my_portfolio cũ giữ nguyên) ...
+    # 1. LẤY DANH MỤC VÀ THÔNG SỐ TỪ FIREBASE
+    watchlist_doc = db.collection("system_config").document("watchlist").get()
+    my_portfolio = watchlist_doc.to_dict().get("tickers", []) if watchlist_doc.exists else ["FPT.VN", "VNM.VN", "AAPL"]
     
-    # --- LẤY BỘ THÔNG SỐ ĐIỀU KHIỂN TỪ FIRESTORE ---
-    param_ref = db.collection("system_config").document("wyckoff_params")
-    param_doc = param_ref.get()
+    param_doc = db.collection("system_config").document("wyckoff_params").get()
     if param_doc.exists:
         sys_params = param_doc.to_dict()
     else:
-        sys_params = {
-            "vol_ma_period": 20, 
-            "sc_vol_multiplier": 2.5, 
-            "spring_vol_ratio": 0.5, 
-            "spring_price_tolerance": 1.05
-        }
-    print(f"⚙️ Áp dụng thông số cấu hình: {sys_params}")
-    # -----------------------------------------------
-        
-    print(f"📊 Đang tiến hành quét {len(my_portfolio)} mã: {my_portfolio}")
+        sys_params = {"vol_ma_period": 20, "sc_vol_multiplier": 2.5, "spring_vol_ratio": 0.5, "spring_price_tolerance": 1.05}
     
-    vsa_engine = WyckoffVSASignal() # Khởi tạo bộ máy phân tích
+    print(f"⚙️ Cấu hình: {sys_params}")
+    print(f"📊 Đang quét {len(my_portfolio)} mã: {my_portfolio}")
+    
+    # 2. THIẾT LẬP THỜI GIAN QUÉT (Tự động 1 năm gần nhất)
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=365)
+    
+    vsa_engine = WyckoffVSASignal(sys_params)
+    signals_found = 0
     
     for ticker in my_portfolio:
         try:
-            # 1. Kéo dữ liệu
+            print(f"  -> Phân tích: {ticker}")
             fetcher = QuantDataFetcher(ticker)
-            df = fetcher.fetch_daily_data("2025-01-01", "2026-05-04")
+            df = fetcher.fetch_daily_data(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
             
-            if df is not None and not df.empty:
-                current_price = df['Close'].iloc[-1]
+            if df is None or df.empty:
+                print(f"     [!] Không lấy được dữ liệu cho {ticker}")
+                continue
                 
-                # 2. Quét tìm Khung giá (Truyền thêm sys_params vào để nó lấy thông số từ Web)
-                tr_top, tr_bottom = vsa_engine.identify_trading_range(df, sys_params)
+            current_price = float(df['Close'].iloc[-1])
+            
+            # BƯỚC 1: Tìm Khung giá (Trading Range)
+            tr_top, tr_bottom = vsa_engine.identify_trading_range(df)
+            
+            if tr_top is None or tr_bottom is None:
+                continue # Chưa có nhịp SC để tạo khung giá
+            
+            # BƯỚC 2: Kiểm tra cạn cung (Spring) tại đáy
+            is_spring = vsa_engine.detect_supply_exhaustion(df, current_price, tr_bottom)
+            
+            if is_spring:
+                signal_data = {
+                    "Date_Detected": df.index[-1].strftime('%Y-%m-%d'),
+                    "Ticker": ticker,
+                    "Price": round(current_price, 2),
+                    "Signal_Type": "Cạn cung (Spring) tại Hỗ trợ",
+                    "TR_Top": round(tr_top, 2),
+                    "TR_Bottom": round(tr_bottom, 2),
+                    "Status": "Mới phát hiện",
+                    "Timestamp": firestore.SERVER_TIMESTAMP
+                }
+                print(f"     🔥 CẢNH BÁO: {ticker} đang có tín hiệu Cạn Cung (Spring)!")
                 
-                # Bỏ qua nếu mã này chưa từng có nhịp bán tháo (chưa có SC)
-                if tr_top is None or tr_bottom is None:
-                    continue 
+                # Đẩy lên Firebase đồng nhất 1 Collection
+                db.collection("wyckoff_signals").add(signal_data)
+                signals_found += 1
                 
-                # 3. Quét tín hiệu Cạn cung
-                is_spring = vsa_engine.detect_supply_exhaustion(df, current_price) 
-                
-                # --- ĐÂY CHÍNH LÀ CHỖ ÁP DỤNG BIẾN SỐ ---
-                # Lấy mức dung sai từ hệ thống (nếu không có thì mặc định là 1.05 tức 5%)
-                tolerance = sys_params.get("spring_price_tolerance", 1.05)
-                
-                # 4. BỘ LỌC KÉP THÔNG MINH: Dùng biến tolerance thay vì viết cứng 1.05
-                if is_spring and (current_price <= tr_bottom * tolerance):
-                    signal_data = {
-                        "Date_Detected": df.index[-1].strftime('%Y-%m-%d'),
-                        "Ticker": ticker,
-                        "Price": float(current_price),
-                        "Signal_Type": "Cạn cung (Spring) trong Trading Range",
-                        "TR_Top": float(tr_top),
-                        "TR_Bottom": float(tr_bottom),
-                        "Status": "Mới phát hiện"
-                    }
-                    print(f"🔥 Phát hiện {ticker} cạn cung tại vùng Đáy của Smart Money!")
-                    # Đẩy lên Firestore 
-                    db.collection("wyckoff_signals").add(signal_data)
-                    
         except Exception as e:
-            print(f"Lỗi khi quét {ticker}: {e}")
+            print(f"     [!] Lỗi khi quét {ticker}: {e}")
+
+    print("="*50)
+    print(f"✅ Hoàn tất! Phát hiện {signals_found} tín hiệu đạt chuẩn hôm nay.")
+    print("="*50)
+
+if __name__ == "__main__":
+    main()
