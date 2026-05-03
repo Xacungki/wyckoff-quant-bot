@@ -4,63 +4,41 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import time
 import warnings
+from vnstock import stock_historical_data
 
 # Tắt cảnh báo rác
 warnings.filterwarnings('ignore')
 
-# ---------------------------------------------------------
-# LỚP GIÁP BẢO VỆ: KIỂM TRA THƯ VIỆN DỮ LIỆU
-# ---------------------------------------------------------
-try:
-    from vnstock import stock_historical_data
-    VNSTOCK_AVAILABLE = True
-except ImportError:
-    VNSTOCK_AVAILABLE = False
-
-import yfinance as yf
-
 # ==========================================
-# KHỐI 1: LẤY DỮ LIỆU (TỰ ĐỘNG CHUYỂN ĐỔI VNSTOCK <-> YFINANCE)
+# KHỐI 1: LẤY DỮ LIỆU (ĐỘC QUYỀN VNSTOCK - NHANH & CHÍNH XÁC 100%)
 # ==========================================
 class QuantDataFetcher:
     def __init__(self, ticker):
         self.original_ticker = str(ticker).upper().strip()
+        # Chỉ lấy phần chữ cái (VD: FPT, HPG), loại bỏ mọi đuôi dư thừa
         self.base_ticker = self.original_ticker.replace(".VN", "").replace(".HM", "").replace(".HN", "").replace(".UP", "")
 
     def fetch_daily_data(self, start_date, end_date):
-        # 1. THỬ DÙNG VNSTOCK TRƯỚC (DỮ LIỆU CHUẨN VIỆT NAM)
-        if VNSTOCK_AVAILABLE:
-            try:
-                df = stock_historical_data(symbol=self.base_ticker, start_date=start_date, end_date=end_date, resolution='1D', type='stock')
-                if df is not None and not df.empty and len(df) > 10:
-                    df = df.rename(columns={'time': 'Date', 'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'})
-                    df['Date'] = pd.to_datetime(df['Date'])
-                    df.set_index('Date', inplace=True)
-                    clean_df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
-                    clean_df = clean_df[clean_df['Volume'] > 0]
-                    if len(clean_df) > 50:
-                        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
-                            clean_df[col] = pd.to_numeric(clean_df[col], errors='coerce')
-                        return clean_df
-            except Exception as e:
-                pass # Bỏ qua lỗi để chạy phương án 2
-
-        # 2. PHƯƠNG ÁN DỰ PHÒNG TỰ ĐỘNG: DÙNG YFINANCE NẾU VNSTOCK LỖI
-        suffixes = [".HM", ".HN", ".UP", ""]
-        for suffix in suffixes:
-            yf_ticker = f"{self.base_ticker}{suffix}"
-            try:
-                df = yf.download(yf_ticker, start=start_date, end=end_date, interval="1d", auto_adjust=False, progress=False)
-                if df is not None and not df.empty and len(df) > 10:
-                    if isinstance(df.columns, pd.MultiIndex):
-                        df.columns = df.columns.get_level_values(0)
-                    if 'Close' in df.columns:
-                        clean_df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
-                        clean_df = clean_df[clean_df['Volume'] > 0]
-                        if len(clean_df) > 50:
-                            return clean_df
-            except Exception:
-                continue
+        try:
+            # Lấy dữ liệu trực tiếp từ CTCK Việt Nam, không qua trung gian Yahoo
+            df = stock_historical_data(symbol=self.base_ticker, start_date=start_date, end_date=end_date, resolution='1D', type='stock')
+            
+            if df is not None and not df.empty and len(df) > 10:
+                # Đồng bộ định dạng cột
+                df = df.rename(columns={'time': 'Date', 'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'})
+                df['Date'] = pd.to_datetime(df['Date'])
+                df.set_index('Date', inplace=True)
+                
+                # Lọc rác (ngày nghỉ lễ, không thanh khoản)
+                clean_df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+                clean_df = clean_df[clean_df['Volume'] > 0]
+                
+                if len(clean_df) > 50:
+                    for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+                        clean_df[col] = pd.to_numeric(clean_df[col], errors='coerce')
+                    return clean_df
+        except Exception:
+            pass # Nếu vnstock không có mã này (rất hiếm), bỏ qua êm ru không báo lỗi rác
                 
         return None
 
@@ -183,7 +161,7 @@ if __name__ == "__main__":
     
     for ticker in my_portfolio:
         try:
-            time.sleep(0.1)
+            time.sleep(0.1) # Tốc độ vnstock siêu nhanh, chỉ cần nghỉ 0.1s là quét mượt
             fetcher = QuantDataFetcher(ticker)
             df = fetcher.fetch_daily_data(start_date, end_date)
             
