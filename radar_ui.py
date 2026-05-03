@@ -7,6 +7,8 @@ from firebase_admin import credentials, firestore
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
+
+# CHÍNH NHỜ LỆNH NÀY MÀ FILE UI RẤT NHỎ GỌN (Gọi não bộ từ quant_core sang)
 from quant_core import QuantDataFetcher, WyckoffVSASignal
 
 # ==========================================
@@ -173,7 +175,7 @@ with tab_scan_chart:
         end_date = datetime.now().strftime('%Y-%m-%d')
         start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
         
-        with st.spinner("Đang tải dữ liệu trực tiếp từ VNSTOCK..."):
+        with st.spinner("Đang tải dữ liệu biểu đồ..."):
             fetcher = QuantDataFetcher(selected_chart_ticker)
             df_chart = fetcher.fetch_daily_data(start_date, end_date)
             
@@ -193,7 +195,7 @@ with tab_scan_chart:
                 
                 # Nối liền biểu đồ không bị đứt đoạn cuối tuần
                 fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
-                fig.update_layout(title=f"VSA & Dòng tiền: {selected_chart_ticker} (Nguồn: VNSTOCK)", yaxis_title="Giá", xaxis_rangeslider_visible=False, height=600, template="plotly_white")
+                fig.update_layout(title=f"VSA & Dòng tiền: {selected_chart_ticker}", yaxis_title="Giá", xaxis_rangeslider_visible=False, height=600, template="plotly_white")
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.error(f"❌ VNSTOCK không phản hồi dữ liệu cho {selected_chart_ticker}.")
+                st.error(f"❌ KHÔNG CÓ DỮ LIỆU. Thư viện vnstock và yfinance đều bị chặn lấy mã {selected_chart_ticker}.")
