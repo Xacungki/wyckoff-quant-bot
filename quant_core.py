@@ -1,49 +1,70 @@
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 import firebase_admin
 from firebase_admin import credentials, firestore
 import time
 import warnings
-from vnstock import stock_historical_data
+import requests
 
 # Tắt cảnh báo rác
 warnings.filterwarnings('ignore')
 
+# ---------------------------------------------------------
+# LỚP GIÁP BẢO VỆ: KIỂM TRA THƯ VIỆN DỮ LIỆU
+# ---------------------------------------------------------
+try:
+    from vnstock import stock_historical_data
+    VNSTOCK_AVAILABLE = True
+except ImportError:
+    VNSTOCK_AVAILABLE = False
+
+import yfinance as yf
+
 # ==========================================
-# KHỐI 1: LẤY DỮ LIỆU (ĐỘC QUYỀN VNSTOCK - NHANH & CHÍNH XÁC 100%)
+# KHỐI 1: LẤY DỮ LIỆU (TỰ ĐỘNG CHUYỂN ĐỔI VNSTOCK <-> YFINANCE)
 # ==========================================
 class QuantDataFetcher:
     def __init__(self, ticker):
         self.original_ticker = str(ticker).upper().strip()
-        # Chỉ lấy phần chữ cái (VD: FPT, HPG), loại bỏ mọi đuôi dư thừa
         self.base_ticker = self.original_ticker.replace(".VN", "").replace(".HM", "").replace(".HN", "").replace(".UP", "")
 
     def fetch_daily_data(self, start_date, end_date):
-        try:
-            # Lấy dữ liệu trực tiếp từ CTCK Việt Nam, không qua trung gian Yahoo
-            df = stock_historical_data(symbol=self.base_ticker, start_date=start_date, end_date=end_date, resolution='1D', type='stock')
-            
-            if df is not None and not df.empty and len(df) > 10:
-                # Đồng bộ định dạng cột
-                df = df.rename(columns={'time': 'Date', 'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'})
-                df['Date'] = pd.to_datetime(df['Date'])
-                df.set_index('Date', inplace=True)
-                
-                # Lọc rác (ngày nghỉ lễ, không thanh khoản)
-                clean_df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
-                clean_df = clean_df[clean_df['Volume'] > 0]
-                
-                if len(clean_df) > 50:
-                    for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
-                        clean_df[col] = pd.to_numeric(clean_df[col], errors='coerce')
-                    return clean_df
-        except Exception:
-            pass # Nếu vnstock không có mã này (rất hiếm), bỏ qua êm ru không báo lỗi rác
-                
+        if VNSTOCK_AVAILABLE:
+            try:
+                df = stock_historical_data(symbol=self.base_ticker, start_date=start_date, end_date=end_date, resolution='1D', type='stock')
+                if df is not None and not df.empty and len(df) > 10:
+                    df = df.rename(columns={'time': 'Date', 'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'})
+                    df['Date'] = pd.to_datetime(df['Date'])
+                    df.set_index('Date', inplace=True)
+                    clean_df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+                    clean_df = clean_df[clean_df['Volume'] > 0]
+                    if len(clean_df) > 50:
+                        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+                            clean_df[col] = pd.to_numeric(clean_df[col], errors='coerce')
+                        return clean_df
+            except Exception:
+                pass 
+
+        suffixes = [".HM", ".HN", ".UP", ""]
+        for suffix in suffixes:
+            yf_ticker = f"{self.base_ticker}{suffix}"
+            try:
+                df = yf.download(yf_ticker, start=start_date, end=end_date, interval="1d", auto_adjust=False, progress=False)
+                if df is not None and not df.empty and len(df) > 10:
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df.columns = df.columns.get_level_values(0)
+                    if 'Close' in df.columns:
+                        clean_df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+                        clean_df = clean_df[clean_df['Volume'] > 0]
+                        if len(clean_df) > 50:
+                            return clean_df
+            except Exception:
+                continue
         return None
 
 # ==========================================
-# KHỐI 2: LOGIC WYCKOFF VSA CHUYÊN SÂU
+# KHỐI 2: LOGIC WYCKOFF VSA & TÍNH NĂNG PRO MỚI
 # ==========================================
 class WyckoffVSASignal:
     def __init__(self, sys_params):
@@ -73,6 +94,34 @@ class WyckoffVSASignal:
             tr_top = df['High'].iloc[sc_index+1:].max()
             
         return float(tr_top), float(tr_bottom)
+
+    # TÍNH NĂNG MỚI 1: TÌM ĐIỂM POC (Point of Control) THEO VOLUME PROFILE
+    def calculate_poc(self, df, tr_bottom, tr_top):
+        try:
+            # Chỉ lấy dữ liệu trong Khung Giá (Trong biên độ)
+            tr_data = df[(df['Close'] >= tr_bottom * 0.95) & (df['Close'] <= tr_top * 1.05)].tail(100)
+            if tr_data.empty: return None
+            # Phân bổ khối lượng theo mức giá (20 bins)
+            bins = np.linspace(tr_bottom * 0.95, tr_top * 1.05, 20)
+            tr_data['Price_Bin'] = pd.cut(tr_data['Close'], bins=bins)
+            poc_bin = tr_data.groupby('Price_Bin')['Volume'].sum().idxmax()
+            poc_price = poc_bin.mid
+            return round(float(poc_price), 2)
+        except Exception:
+            return None
+
+    # TÍNH NĂNG MỚI 2: TÍNH ATR (Average True Range) CHO TRAILING STOP
+    def calculate_atr(self, df, period=14):
+        try:
+            high_low = df['High'] - df['Low']
+            high_close = np.abs(df['High'] - df['Close'].shift())
+            low_close = np.abs(df['Low'] - df['Close'].shift())
+            ranges = pd.concat([high_low, high_close, low_close], axis=1)
+            true_range = np.max(ranges, axis=1)
+            atr = true_range.rolling(period).mean()
+            return round(float(atr.iloc[-1]), 2)
+        except Exception:
+            return 0
 
     def check_weekly_trend(self, df):
         if len(df) < 100: return "Không rõ"
@@ -125,7 +174,7 @@ class WyckoffVSASignal:
         return None
 
 # ==========================================
-# KHỐI 3: DATABASE & CHẠY TỰ ĐỘNG
+# KHỐI 3: DATABASE & CẢNH BÁO TELEGRAM
 # ==========================================
 class FirestoreManager:
     def __init__(self, key_path="firebase_key.json"):
@@ -139,6 +188,13 @@ class FirestoreManager:
         if not self.db: return
         try: self.db.collection('wyckoff_signals').document().set(signal_data)
         except: pass
+
+def send_telegram_alert(bot_token, chat_id, text):
+    try:
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+        requests.post(url, json=payload, timeout=5)
+    except Exception: pass
 
 if __name__ == "__main__":
     db_manager = FirestoreManager()
@@ -159,9 +215,16 @@ if __name__ == "__main__":
     start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
     vsa_engine = WyckoffVSASignal(sys_params)
     
+    # Chuẩn bị gửi Telegram nếu được cài đặt
+    tele_doc = db.collection("system_config").document("telegram").get()
+    tele_config = tele_doc.to_dict() if tele_doc.exists else {}
+    bot_token = tele_config.get("bot_token", "")
+    chat_id = tele_config.get("chat_id", "")
+    alert_messages = []
+
     for ticker in my_portfolio:
         try:
-            time.sleep(0.1) # Tốc độ vnstock siêu nhanh, chỉ cần nghỉ 0.1s là quét mượt
+            time.sleep(0.2)
             fetcher = QuantDataFetcher(ticker)
             df = fetcher.fetch_daily_data(start_date, end_date)
             
@@ -173,11 +236,36 @@ if __name__ == "__main__":
                 signal_type = vsa_engine.detect_advanced_signals(df, current_price, tr_top, tr_bottom)
                 if signal_type:
                     rs_score = round(((current_price - float(df['Close'].iloc[-60])) / float(df['Close'].iloc[-60])) * 100, 2)
+                    weekly_trend = vsa_engine.check_weekly_trend(df)
+                    vsa_tags = vsa_engine.get_vsa_tags(df)
+                    
+                    # TÍNH TOÁN CÁC BIẾN SỐ PRO MỚI
+                    atr_val = vsa_engine.calculate_atr(df)
+                    poc_val = vsa_engine.calculate_poc(df, tr_bottom, tr_top)
+                    trailing_stop = round(current_price - (1.5 * atr_val), 2) if atr_val else 0
+
+                    # TÍNH ĐIỂM RATING TOÀN DIỆN (MAX 100)
+                    rating = 50 # Điểm gốc
+                    if rs_score > 0: rating += min(rs_score, 20) # Tối đa +20 điểm từ RS
+                    if weekly_trend == "TĂNG (Uptrend)": rating += 15
+                    if "No Supply" in vsa_tags or "Stopping Vol" in vsa_tags: rating += 15
+                    rating = int(min(max(rating, 0), 100)) # Chặn trong mức 0-100
+
                     signal_data = {
                         "Date_Detected": df.index[-1].strftime('%Y-%m-%d'), "Ticker": ticker, "Price": float(current_price),
                         "Signal_Type": signal_type, "TR_Top": float(tr_top), "TR_Bottom": float(tr_bottom), "RS_Score": rs_score,
-                        "Weekly_Trend": vsa_engine.check_weekly_trend(df), "VSA_Tags": vsa_engine.get_vsa_tags(df),
+                        "Weekly_Trend": weekly_trend, "VSA_Tags": vsa_tags,
+                        "Rating_Score": rating, "Trailing_Stop": trailing_stop, "POC_Level": poc_val,
                         "Status": "Mới phát hiện", "Timestamp": firestore.SERVER_TIMESTAMP
                     }
                     db_manager.push_signal(signal_data)
+
+                    # Lưu vào danh sách cảnh báo
+                    if "Mua" in signal_type and rating >= 70:
+                        alert_messages.append(f"🟢 <b>{ticker}</b> ({signal_type})\nGiá: {current_price} | Điểm: {rating}/100\nCắt lỗ ATR: {trailing_stop}")
         except: pass
+
+    # Bắn Cảnh Báo Telegram
+    if bot_token and chat_id and alert_messages:
+        final_msg = "🚀 <b>WYCKOFF RADAR PRO PHÁT HIỆN</b>\n\n" + "\n\n".join(alert_messages)
+        send_telegram_alert(bot_token, chat_id, final_msg)
