@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-# Thư viện Vẽ Biểu Đồ & Heatmap
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
@@ -82,7 +81,6 @@ doc = doc_ref.get()
 
 current_watchlist = doc.to_dict().get("tickers", []) if doc.exists else ["FPT.VN", "VNM.VN", "AAPL"]
 
-# Nút Thêm toàn thị trường
 if st.sidebar.button("🌐 THÊM TOÀN THỊ TRƯỜNG (TOP 100)"):
     all_tickers = list(TICKER_TO_SECTOR.keys())
     doc_ref.set({"tickers": all_tickers})
@@ -133,7 +131,7 @@ with st.sidebar.form("param_form"):
     new_ma = st.number_input("Chu kỳ MA Khối lượng", min_value=10, max_value=50, value=int(current_params.get("vol_ma_period", 20)))
     new_sc_mult = st.slider("Hệ số Vol (Selling Climax)", 1.5, 5.0, float(current_params.get("sc_vol_multiplier", 2.5)), 0.1)
     new_spring_vol = st.slider("Ngưỡng Vol Cạn cung", 0.1, 1.0, float(current_params.get("spring_vol_ratio", 0.5)), 0.1)
-    new_tolerance = st.slider("Độ lệch giá tại đáy (%)", 1.0, 10.0, float((current_params.get("spring_price_tolerance", 1.05) - 1) * 100), 0.5)
+    new_tolerance = st.slider("Độ lệch giá tại đáy (%)", 1.0, 15.0, float((current_params.get("spring_price_tolerance", 1.05) - 1) * 100), 0.5)
 
     if st.form_submit_button("Lưu Cấu Hình"):
         current_params = {
@@ -160,7 +158,6 @@ col1, col2, col3 = st.columns(3)
 total_signals = len(df_signals) if not df_signals.empty else 0
 latest_date = df_signals['Date_Detected'].iloc[0] if not df_signals.empty else "Chưa có dữ liệu"
 
-# Lọc nhanh số lượng Mua/Bán
 buy_count = len(df_signals[df_signals['Signal_Type'].str.contains("Mua", na=False)]) if not df_signals.empty else 0
 sell_count = len(df_signals[df_signals['Signal_Type'].str.contains("Bán", na=False)]) if not df_signals.empty else 0
 
@@ -172,13 +169,11 @@ col3.metric("🔴 Cảnh Báo BÁN", sell_count)
 def convert_df_to_csv(df):
     return df.to_csv(index=False).encode('utf-8-sig')
 
-# CẤU TRÚC TAB MỚI
-tab_radar, tab_heatmap, tab_scan_chart = st.tabs(["📡 Radar Đa Khung Thời Gian", "🗺️ Bản Đồ Dòng Tiền (Heatmap)", "🚀 Quét & Biểu Đồ VSA"])
+tab_radar, tab_heatmap, tab_scan_chart = st.tabs(["📡 Radar Đa Khung", "🗺️ Bản Đồ Dòng Tiền", "🚀 Quét & Biểu Đồ VSA"])
 
-# --- TAB 1: RADAR & KHUYẾN NGHỊ ---
+# --- TAB 1: RADAR ---
 with tab_radar:
     st.markdown("### Danh sách Báo cáo & Đánh giá Xu hướng")
-    
     if not df_signals.empty:
         data = []
         for index, sig in df_signals.iterrows():
@@ -200,7 +195,6 @@ with tab_radar:
             is_vn = ".VN" in ticker or ".HM" in ticker or ".HN" in ticker
             sector = TICKER_TO_SECTOR.get(ticker, "Khác")
             
-            # Tô màu tín hiệu
             sig_type = sig.get("Signal_Type", "")
             if "Mua" in sig_type: sig_type = f"🟢 {sig_type}"
             elif "Bán" in sig_type: sig_type = f"🔴 {sig_type}"
@@ -222,7 +216,7 @@ with tab_radar:
         
         c1, c2 = st.columns([3, 1])
         with c1:
-            st.info("💡 **Tín Hiệu Đa Khung:** Mua khi Tín hiệu là 🟢 Spring/BU + Trend Tuần là 📈 TĂNG + Nến VSA báo No Supply. Xác suất thắng > 80%.")
+            st.info("💡 **Tín Hiệu Đa Khung:** Mua khi Tín hiệu là 🟢 Spring/BU + Trend Tuần là 📈 TĂNG + Nến VSA báo No Supply.")
         with c2:
             csv = convert_df_to_csv(df_display)
             st.download_button(
@@ -235,24 +229,16 @@ with tab_radar:
     else:
         st.info("Hiện chưa có tín hiệu mới nào đạt chuẩn.")
 
-# --- TAB 2: HEATMAP (BẢN ĐỒ DÒNG TIỀN) ---
+# --- TAB 2: HEATMAP ---
 with tab_heatmap:
     st.markdown("### 🗺️ Bản Đồ Nhiệt Dòng Tiền Theo Ngành")
-    st.write("Quan sát sức mạnh dòng tiền của các nhóm ngành có tín hiệu MUA trong bộ lọc.")
-    
     if not df_signals.empty:
-        # Lọc ra các mã có tín hiệu MUA
         df_buy = df_signals[df_signals['Signal_Type'].str.contains("Mua", na=False, case=False)].copy()
-        
         if not df_buy.empty:
             df_buy['Sector'] = df_buy['Ticker'].apply(lambda x: TICKER_TO_SECTOR.get(x, "Khác"))
-            # Nhóm dữ liệu để vẽ Treemap
             fig_tree = px.treemap(
-                df_buy, 
-                path=[px.Constant("Thị Trường"), 'Sector', 'Ticker'], 
-                values='RS_Score', # Kích thước ô dựa trên RS Score (Dòng tiền mạnh)
-                color='RS_Score', 
-                color_continuous_scale='RdYlGn',
+                df_buy, path=[px.Constant("Thị Trường"), 'Sector', 'Ticker'], 
+                values='RS_Score', color='RS_Score', color_continuous_scale='RdYlGn',
                 title="Bản đồ Ngành (Kích thước & Màu sắc = Sức mạnh dòng tiền RS)"
             )
             fig_tree.update_layout(height=600, margin=dict(t=50, l=10, r=10, b=10))
@@ -262,22 +248,21 @@ with tab_heatmap:
     else:
         st.info("Chưa có dữ liệu.")
 
-# --- TAB 3: QUÉT CHỦ ĐỘNG & BIỂU ĐỒ ---
+# --- TAB 3: QUÉT & BIỂU ĐỒ ---
 with tab_scan_chart:
     st.markdown("### 🚀 Quét Thị Trường Đa Khung Thời Gian")
-    st.write("Kích hoạt lõi AI phân tích Cấu trúc Wyckoff, Xu hướng Tuần (Weekly Trend) và Mẫu hình Nến VSA.")
     
     if st.button("▶️ KHỞI CHẠY MÁY QUÉT NGAY LẬP TỨC", use_container_width=True):
         progress_bar = st.progress(0)
         status_text = st.empty()
         signals_found = 0
+        error_count = 0
         
         end_date = datetime.now()
-        start_date = end_date - timedelta(days=365) # Lấy 1 năm dữ liệu để soi được Khung Tuần
+        start_date = end_date - timedelta(days=365)
         vsa_engine = WyckoffVSASignal(current_params)
         
         import time
-        
         for i, ticker in enumerate(current_watchlist):
             status_text.text(f"Đang phân tích Đa Khung: {ticker}...")
             try:
@@ -285,23 +270,21 @@ with tab_scan_chart:
                 fetcher = QuantDataFetcher(ticker)
                 df = fetcher.fetch_daily_data(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
                 
-                if df is not None and len(df) > 60:
+                # HIỂN THỊ CẢNH BÁO NẾU MÙ DỮ LIỆU
+                if df is None or df.empty:
+                    st.toast(f"⚠️ Mù dữ liệu: Yahoo Finance không trả về số liệu cho {ticker}")
+                    error_count += 1
+                    continue
+                
+                if len(df) > 60:
                     current_price = float(df['Close'].iloc[-1])
                     tr_top, tr_bottom = vsa_engine.identify_trading_range(df)
                     
                     if tr_top is not None and tr_bottom is not None:
-                        # KIỂM TRA TÍN HIỆU ĐA DẠNG
                         signal_type = vsa_engine.detect_advanced_signals(df, current_price, tr_top, tr_bottom)
-                        
                         if signal_type:
-                            # TÍNH XU HƯỚNG TUẦN
                             weekly_trend = vsa_engine.check_weekly_trend(df)
-                            
-                            # TÌM NẾN VSA
                             vsa_tags = vsa_engine.get_vsa_tags(df)
-                            
-                            # TÍNH RS
-                            rs_score = 0
                             price_60d = float(df['Close'].iloc[-60])
                             rs_score = round(((current_price - price_60d) / price_60d) * 100, 2)
                                 
@@ -321,11 +304,12 @@ with tab_scan_chart:
                             db.collection('wyckoff_signals').add(signal_data)
                             signals_found += 1
             except Exception as e:
-                pass
+                st.toast(f"❌ Lỗi xử lý {ticker}: {e}")
+                error_count += 1
                 
             progress_bar.progress((i + 1) / len(current_watchlist))
             
-        status_text.success(f"✅ Quét hoàn tất! Tìm thấy {signals_found} tín hiệu (Mua/Bán). Vui lòng sang Tab Radar để xem.")
+        status_text.success(f"✅ Quét hoàn tất! Tìm thấy {signals_found} tín hiệu. Bị lỗi/Mù dữ liệu: {error_count} mã.")
         st.cache_data.clear() 
 
     st.markdown("---")
@@ -341,12 +325,12 @@ with tab_scan_chart:
             fetcher = QuantDataFetcher(selected_chart_ticker)
             df_chart = fetcher.fetch_daily_data(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
             
+            # CẢNH BÁO RÕ RÀNG NẾU KHÔNG CÓ DỮ LIỆU ĐỂ VẼ BIỂU ĐỒ
             if df_chart is not None and not df_chart.empty:
                 vsa_engine = WyckoffVSASignal(current_params)
                 tr_top, tr_bottom = vsa_engine.identify_trading_range(df_chart)
                 
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
-                
                 fig.add_trace(go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'], low=df_chart['Low'], close=df_chart['Close'], name="Giá"), row=1, col=1)
                 
                 if tr_top and tr_bottom:
@@ -361,3 +345,5 @@ with tab_scan_chart:
                 
                 fig.update_layout(title=f"Cấu trúc VSA & Dòng tiền: {selected_chart_ticker}", yaxis_title="Giá", xaxis_rangeslider_visible=False, height=600, template="plotly_white")
                 st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.error(f"❌ KHÔNG THỂ TẢI DỮ LIỆU cho {selected_chart_ticker}. Máy chủ Yahoo Finance từ chối truy xuất hoặc mã không tồn tại.")
