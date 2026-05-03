@@ -87,6 +87,69 @@ for ticker in current_watchlist:
         doc_ref.update({"tickers": current_watchlist})
         st.rerun()
 
+# ==========================================
+# MODULE: BẢNG ĐIỀU KHIỂN BIẾN SỐ (PARAMETER DASHBOARD)
+# ==========================================
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🎛️ Bảng Điều Khiển Wyckoff")
+
+# 1. Đọc thông số hiện tại từ Firestore
+param_ref = db.collection("system_config").document("wyckoff_params")
+param_doc = param_ref.get()
+
+# Nếu chưa có, thiết lập bộ thông số mặc định chuẩn
+if not param_doc.exists:
+    default_params = {
+        "vol_ma_period": 20,              # Chu kỳ MA Khối lượng
+        "sc_vol_multiplier": 2.5,         # Hệ số đột biến Volume của Selling Climax
+        "spring_vol_ratio": 0.5,          # Ngưỡng cạn kiệt Volume của Spring
+        "spring_price_tolerance": 1.05    # Độ lệch giá cho phép tại đáy (%)
+    }
+    param_ref.set(default_params)
+    current_params = default_params
+else:
+    current_params = param_doc.to_dict()
+
+# 2. Xây dựng Form tương tác
+with st.sidebar.form("param_form"):
+    new_ma = st.number_input(
+        "Chu kỳ MA Khối lượng", 
+        min_value=10, max_value=50, 
+        value=int(current_params.get("vol_ma_period", 20))
+    )
+    new_sc_mult = st.slider(
+        "Hệ số Volume (Selling Climax)", 
+        min_value=1.5, max_value=5.0, 
+        value=float(current_params.get("sc_vol_multiplier", 2.5)), 
+        step=0.1
+    )
+    new_spring_vol = st.slider(
+        "Ngưỡng Volume cạn kiệt (Spring)", 
+        min_value=0.1, max_value=1.0, 
+        value=float(current_params.get("spring_vol_ratio", 0.5)), 
+        step=0.1
+    )
+    new_tolerance = st.slider(
+        "Độ lệch giá tại đáy cho phép (%)", 
+        min_value=1.0, max_value=10.0, 
+        value=float((current_params.get("spring_price_tolerance", 1.05) - 1) * 100), 
+        step=0.5
+    )
+
+    submit_params = st.form_submit_button("Lưu Cấu Hình")
+    
+    # 3. Cập nhật thẳng vào Database khi nhấn Lưu
+    if submit_params:
+        updated_params = {
+            "vol_ma_period": new_ma,
+            "sc_vol_multiplier": new_sc_mult,
+            "spring_vol_ratio": new_spring_vol,
+            "spring_price_tolerance": 1 + (new_tolerance / 100)
+        }
+        param_ref.update(updated_params)
+        st.success("✅ Đã cập nhật tham số định lượng!")
+        st.rerun()
+
 # 3. HÀM TẢI DỮ LIỆU TỪ FIRESTORE
 def load_signals():
     # Kéo dữ liệu từ collection 'vsa_signals', sắp xếp mới nhất lên đầu
