@@ -191,19 +191,22 @@ if __name__ == "__main__":
             if df is not None and not df.empty:
                 current_price = df['Close'].iloc[-1]
                 
-                # 2. Quét tìm Khung giá (Trading Range)
-                tr_top, tr_bottom = vsa_engine.identify_trading_range(df)
+                # 2. Quét tìm Khung giá (Truyền thêm sys_params vào để nó lấy thông số từ Web)
+                tr_top, tr_bottom = vsa_engine.identify_trading_range(df, sys_params)
                 
                 # Bỏ qua nếu mã này chưa từng có nhịp bán tháo (chưa có SC)
                 if tr_top is None or tr_bottom is None:
                     continue 
                 
-                # 3. Quét tín hiệu Cạn cung theo logic cũ của bạn
-                # (Sửa tên biến is_spring cho phù hợp với cách hàm của bạn trả về kết quả)
+                # 3. Quét tín hiệu Cạn cung
                 is_spring = vsa_engine.detect_supply_exhaustion(df, current_price) 
                 
-                # 4. BỘ LỌC KÉP: Có Spring VÀ giá phải nằm ở đáy TR (hoặc đâm thủng nhẹ giả mạo)
-                if is_spring and (current_price <= tr_bottom * 1.05):
+                # --- ĐÂY CHÍNH LÀ CHỖ ÁP DỤNG BIẾN SỐ ---
+                # Lấy mức dung sai từ hệ thống (nếu không có thì mặc định là 1.05 tức 5%)
+                tolerance = sys_params.get("spring_price_tolerance", 1.05)
+                
+                # 4. BỘ LỌC KÉP THÔNG MINH: Dùng biến tolerance thay vì viết cứng 1.05
+                if is_spring and (current_price <= tr_bottom * tolerance):
                     signal_data = {
                         "Date_Detected": df.index[-1].strftime('%Y-%m-%d'),
                         "Ticker": ticker,
