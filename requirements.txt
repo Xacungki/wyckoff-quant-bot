@@ -1,5 +1,6 @@
-streamlit==1.32.0
-yfinance>=0.2.43
+streamlit>=1.32.0
 pandas>=2.2.0
 firebase-admin==6.4.0
-plotly==5.19.0
+plotly>=5.19.0
+vnstock>=0.2.8
+requests>=2.31.0
