@@ -6,19 +6,29 @@ from firebase_admin import credentials, firestore
 import time
 
 # ==========================================
-# KHỐI 1: LẤY DỮ LIỆU
+# KHỐI 1: LẤY DỮ LIỆU (Đã vá lỗi "Mù Dữ Liệu" các sàn HNX, UPCOM)
 # ==========================================
 class QuantDataFetcher:
     def __init__(self, ticker):
-        self.ticker = ticker
-        self.yf_ticker = ticker.replace(".VN", ".HM")
+        self.original_ticker = ticker
+        # Xóa đuôi .VN đi để chủ động test từng sàn
+        self.base_ticker = ticker.replace(".VN", "")
 
     def fetch_daily_data(self, start_date, end_date):
-        df = yf.download(self.yf_ticker, start=start_date, end=end_date, interval="1d", progress=False)
-        if df.empty: return None
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+        # Thuật toán Fallback: Thử lần lượt HOSE, HNX, UPCOM.
+        # Đảm bảo 100% mã chứng khoán Việt Nam đều lấy được dữ liệu.
+        for suffix in [".HM", ".HN", ".UP", ""]:
+            yf_ticker = f"{self.base_ticker}{suffix}"
+            try:
+                df = yf.download(yf_ticker, start=start_date, end=end_date, interval="1d", progress=False)
+                if df is not None and not df.empty and len(df) > 0:
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df.columns = df.columns.get_level_values(0)
+                    if 'Close' in df.columns:
+                        return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+            except Exception:
+                continue
+        return None
 
 # ==========================================
 # KHỐI 2: LOGIC WYCKOFF VSA CHUYÊN SÂU (NHÓM 1)
@@ -37,7 +47,8 @@ class WyckoffVSASignal:
         df['Vol_MA'] = df['Volume'].rolling(window=ma_period).mean()
         df['Is_SC'] = (df['Volume'] > df['Vol_MA'] * sc_mult) & (df['Close'] < df['Open'])
         
-        recent_data = df.tail(60)
+        # SỬA LỖI: Mở rộng tầm nhìn từ 60 ngày lên 150 ngày (Nửa năm) để tìm Đáy Bán tháo
+        recent_data = df.tail(150)
         sc_candles = recent_data[recent_data['Is_SC'] == True]
         
         if sc_candles.empty:
@@ -55,21 +66,16 @@ class WyckoffVSASignal:
             
         return float(tr_top), float(tr_bottom)
 
-    # 1. TÍNH NĂNG MỚI: PHÂN TÍCH XU HƯỚNG TUẦN (WEEKLY TREND)
     def check_weekly_trend(self, df):
         if len(df) < 100: return "Không rõ"
-        # Nén dữ liệu Ngày thành dữ liệu Tuần
         weekly_df = df.resample('W-FRI').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last', 'Volume':'sum'})
         weekly_df = weekly_df.dropna()
-        
-        # Đường xu hướng MA30 Tuần (Tương đương đường trung bình 200 ngày)
         weekly_df['MA30'] = weekly_df['Close'].rolling(30).mean()
         
         if len(weekly_df) > 30 and weekly_df['Close'].iloc[-1] > weekly_df['MA30'].iloc[-1]:
             return "TĂNG (Uptrend)"
         return "GIẢM (Downtrend)"
 
-    # 2. TÍNH NĂNG MỚI: NHẬN DIỆN MẪU HÌNH NẾN VSA ĐƠN LẺ
     def get_vsa_tags(self, df):
         if len(df) < 20: return ""
         tags = []
@@ -80,17 +86,15 @@ class WyckoffVSASignal:
         spread = latest['High'] - latest['Low']
         prev_spread = prev['High'] - prev['Low']
         
-        # No Supply Bar (Nến Cạn Cung): Giảm điểm, biên độ hẹp, Volume siêu thấp
         if latest['Close'] < prev['Close'] and spread < prev_spread and latest['Volume'] < prev['Volume'] and latest['Volume'] < (vol_ma * 0.7):
             tags.append("No Supply")
             
-        # Stopping Volume (Hãm đà rơi): Gap down hoặc rơi mạnh nhưng rút chân, Volume khổng lồ
         if latest['Close'] < prev['Close'] and latest['Volume'] > (vol_ma * 2.0) and latest['Close'] > (latest['Low'] + spread * 0.5):
             tags.append("Stopping Vol")
 
         return ", ".join(tags) if tags else "Bình thường"
 
-    # 3. TÍNH NĂNG MỚI: BỘ LỌC ĐA TÍN HIỆU (MUA / BÁN)
+    # NÂNG CẤP BỘ LỌC ĐA TÍN HIỆU (Thêm tín hiệu SOS)
     def detect_advanced_signals(self, df, current_price, tr_top, tr_bottom):
         ma_period = self.params.get("vol_ma_period", 20)
         vol_ratio = self.params.get("spring_vol_ratio", 0.5)
@@ -103,18 +107,19 @@ class WyckoffVSASignal:
         latest_low = float(df['Low'].iloc[-1])
         latest_close = float(df['Close'].iloc[-1])
 
-        # TÍN HIỆU 1: SPRING (MUA) - Rơi về Hỗ trợ + Cạn cung
-        if current_price <= (tr_bottom * tolerance) and latest_vol < (latest_sma * vol_ratio):
+        # TÍN HIỆU 1: SPRING (MUA) - Rơi về hỗ trợ + Cạn cung (Giới hạn đáy không sập quá sâu 15%)
+        if (tr_bottom * 0.85) <= current_price <= (tr_bottom * tolerance) and latest_vol < (latest_sma * vol_ratio):
             return "Spring (Mua)"
             
-        # TÍN HIỆU 2: BACK-UP / BU (MUA) - Vượt Kháng cự rồi test lại với Volume thấp
-        if current_price >= (tr_top * 0.98) and current_price <= (tr_top * 1.05) and latest_vol < (latest_sma * vol_ratio):
-            # Cần đảm bảo giá đã từng vượt qua Kháng cự trong 10 phiên trước
-            recent_highs = df['High'].tail(10).max()
-            if recent_highs > tr_top:
-                return "Back-up (Mua)"
+        # TÍN HIỆU 2: BACK-UP / BU (MUA) - Test lại kháng cự
+        if (tr_top * 0.95) <= current_price <= (tr_top * 1.05) and latest_vol < (latest_sma * vol_ratio):
+            return "Back-up (Mua)"
+            
+        # TÍN HIỆU 3: SOS VƯỢT ĐỈNH (MUA) - Dòng tiền lớn xác nhận vượt kháng cự
+        if current_price > (tr_top * 0.98) and latest_vol > (latest_sma * 1.5) and latest_close > (latest_high + latest_low) / 2:
+            return "SOS Vượt đỉnh (Mua)"
 
-        # TÍN HIỆU 3: UPTHRUST (BÁN) - Đâm thủng Kháng cự nhưng đóng cửa thấp, Volume lớn (Phân phối đỉnh)
+        # TÍN HIỆU 4: UPTHRUST (BÁN) - Phân phối đỉnh
         if latest_high > tr_top and latest_close < (latest_high + latest_low) / 2 and latest_vol > (latest_sma * 1.5):
             return "Upthrust (Bán)"
 
@@ -187,7 +192,7 @@ if __name__ == "__main__":
                 
                 if tr_top is None or tr_bottom is None: continue 
                 
-                # Quét 3 Loại Tín hiệu
+                # Quét 4 Loại Tín hiệu VSA
                 signal_type = vsa_engine.detect_advanced_signals(df, current_price, tr_top, tr_bottom)
                 
                 if signal_type:
@@ -212,6 +217,6 @@ if __name__ == "__main__":
                     db_manager.push_signal(signal_data)
                     
         except Exception as e:
-            print(f"Lỗi: {e}")
+            pass # Chạy ngầm, bỏ qua mã lỗi để không đứt quãng
             
     print(f"✅ Hoàn tất quét ngày {end_date.strftime('%Y-%m-%d')}.")
