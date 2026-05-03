@@ -117,10 +117,20 @@ class MarketScanner:
 if __name__ == "__main__":
     print("🚀 Bắt đầu chạy Lõi Quét tự động từ GitHub Actions...")
     
-    # Danh sách mã của bạn
-    my_portfolio = ["NUS", "AAPL", "VNM.VN", "FPT.VN"] 
+    # 1. Lấy danh sách cấu hình từ Database
+    db = init_firebase() # Gọi hàm kết nối có sẵn
+    doc_ref = db.collection("system_config").document("watchlist")
+    doc = doc_ref.get()
     
+    if doc.exists:
+        my_portfolio = doc.to_dict().get("tickers", [])
+    else:
+        # Fallback an toàn nếu chưa có db
+        my_portfolio = ["FPT.VN", "VNM.VN", "AAPL", "NUS"] 
+        
+    print(f"📊 Đang tiến hành quét {len(my_portfolio)} mã: {my_portfolio}")
+    
+    # 2. Khởi động Lõi
     scanner = MarketScanner(watchlist=my_portfolio)
-    # Cấu hình ngày rộng để quét
     scanner.run_daily_scan(start_date="2025-01-01", end_date="2026-05-04")
     scanner.generate_report()
