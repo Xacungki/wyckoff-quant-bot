@@ -4,12 +4,8 @@ import json
 from datetime import datetime, timedelta
 import firebase_admin
 from firebase_admin import credentials, firestore
-
-# Thêm thư viện vẽ Biểu đồ
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-
-# Nhập (Import) 2 Class từ Lõi Quét để tái sử dụng ngay trên Web
 from quant_core import QuantDataFetcher, WyckoffVSASignal
 
 # ==========================================
@@ -23,7 +19,8 @@ st.markdown("""
         h1 { color: #1A1A1A; border-bottom: 2px solid #D4AF37; padding-bottom: 10px; font-family: 'Helvetica Neue', sans-serif; }
         .stDataFrame { box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05); border-radius: 8px; overflow: hidden; }
         div[data-testid="stMetricValue"] { color: #D4AF37; }
-        .stButton>button { border: 1px solid #D4AF37; border-radius: 5px; font-weight: bold; }
+        .stButton>button { border: 1px solid #D4AF37; border-radius: 5px; font-weight: bold; transition: all 0.3s; }
+        .stButton>button:hover { background-color: #D4AF37; color: white; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -96,7 +93,6 @@ if st.sidebar.button("📥 Thêm toàn bộ Ngành này"):
         if t not in current_watchlist:
             current_watchlist.append(t)
             added_count += 1
-    
     if added_count > 0:
         doc_ref.set({"tickers": current_watchlist})
         st.sidebar.success(f"Đã thêm {added_count} mã ngành!")
@@ -149,7 +145,7 @@ with st.sidebar.form("param_form"):
 # ==========================================
 # GIAO DIỆN CHÍNH (MAIN DASHBOARD)
 # ==========================================
-st.title("Trạm Radar Tín Hiệu Định Lượng")
+st.title("Trạm Radar Tín Hiệu Định Lượng PRO")
 
 @st.cache_data(ttl=60)
 def load_signals():
@@ -165,12 +161,17 @@ latest_date = df_signals['Date_Detected'].iloc[0] if not df_signals.empty else "
 col1.metric("Tổng Tín Hiệu Phát Hiện", total_signals)
 col2.metric("Ngày Cập Nhật Gần Nhất", latest_date)
 
-# THÊM TAB 2: QUÉT & BIỂU ĐỒ
-tab_radar, tab_scan_chart, tab_knowledge = st.tabs(["📡 Radar Tín Hiệu", "🚀 Quét Chủ Động & Biểu Đồ", "🧠 Trạm Nạp Kiến Thức"])
+# THIẾT LẬP HÀM XUẤT FILE EXCEL/CSV CÓ DẤU TIẾNG VIỆT CHUẨN
+@st.cache_data
+def convert_df_to_csv(df):
+    # Dùng utf-8-sig để Excel nhận diện đúng tiếng Việt có dấu
+    return df.to_csv(index=False).encode('utf-8-sig')
 
-# --- TAB 1: RADAR ---
+tab_radar, tab_scan_chart, tab_knowledge = st.tabs(["📡 Radar & Khuyến Nghị", "🚀 Quét Chủ Động & Biểu Đồ", "🧠 Trạm Nạp Kiến Thức"])
+
+# --- TAB 1: RADAR & KHUYẾN NGHỊ ---
 with tab_radar:
-    st.markdown("### Danh sách Báo cáo Chi tiết")
+    st.markdown("### Danh sách Báo cáo Chi tiết & Xếp hạng RS")
     
     if not df_signals.empty:
         data = []
@@ -178,6 +179,7 @@ with tab_radar:
             entry_price = sig.get("Price", 0)
             tr_top = sig.get("TR_Top", 0)
             tr_bottom = sig.get("TR_Bottom", 0)
+            rs_score = sig.get("RS_Score", "N/A")
             
             stop_loss = tr_bottom * 0.98 if tr_bottom else 0
             rr_ratio = "N/A"
@@ -194,6 +196,7 @@ with tab_radar:
                 "Ngày": sig.get("Date_Detected", ""),
                 "Mã CK": ticker,
                 "Nhóm Ngành": sector,
+                "Điểm RS (Sức mạnh)": f"{rs_score}%" if isinstance(rs_score, (int, float)) else rs_score,
                 "Giá Vào": f"{entry_price:,.0f}" if is_vn else f"${entry_price:,.2f}",
                 "Cắt Lỗ (SL)": f"{stop_loss:,.0f}" if is_vn and stop_loss else (f"${stop_loss:,.2f}" if stop_loss else "-"),
                 "Chốt Lời (TP)": f"{tr_top:,.0f}" if is_vn and tr_top else (f"${tr_top:,.2f}" if tr_top else "-"),
@@ -201,14 +204,32 @@ with tab_radar:
                 "Tín Hiệu": sig.get("Signal_Type", "")
             })
 
-        st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
+        df_display = pd.DataFrame(data)
+        
+        # UI Tùy chọn Xuất Báo Cáo
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            st.info("💡 **Điểm RS (Sức mạnh):** Cổ phiếu có RS dương (+) là đang khỏe hơn thị trường chung. Hãy ưu tiên mua các mã có RS cao nhất để tối ưu lợi nhuận.")
+        with c2:
+            # Nút Tải Báo Cáo
+            csv = convert_df_to_csv(df_display)
+            st.download_button(
+                label="📥 Xuất Báo Cáo Khuyến Nghị (Excel/CSV)",
+                data=csv,
+                file_name=f"Wyckoff_BaoCao_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+        # Hiển thị bảng
+        st.dataframe(df_display, use_container_width=True, hide_index=True)
     else:
         st.info("Hiện chưa có tín hiệu mới nào đạt chuẩn.")
 
-# --- TAB 2: QUÉT CHỦ ĐỘNG & BIỂU ĐỒ (MỚI) ---
+# --- TAB 2: QUÉT CHỦ ĐỘNG & BIỂU ĐỒ ---
 with tab_scan_chart:
     st.markdown("### 🚀 Quét Thị Trường Trực Tiếp")
-    st.write("Kích hoạt lõi AI định lượng để rà soát ngay lập tức danh mục hiện tại (Không cần đợi tự động).")
+    st.write("Kích hoạt lõi AI định lượng để rà soát ngay lập tức danh mục hiện tại.")
     
     if st.button("▶️ KHỞI CHẠY MÁY QUÉT NGAY LẬP TỨC", use_container_width=True):
         progress_bar = st.progress(0)
@@ -219,10 +240,12 @@ with tab_scan_chart:
         start_date = end_date - timedelta(days=365)
         vsa_engine = WyckoffVSASignal(current_params)
         
+        import time
+        
         for i, ticker in enumerate(current_watchlist):
             status_text.text(f"Đang phân tích: {ticker}...")
             try:
-                # Gọi Core logic
+                time.sleep(0.3) # Nghỉ để tránh Yahoo khóa IP
                 fetcher = QuantDataFetcher(ticker)
                 df = fetcher.fetch_daily_data(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
                 
@@ -233,6 +256,12 @@ with tab_scan_chart:
                     if tr_top is not None and tr_bottom is not None:
                         is_spring = vsa_engine.detect_supply_exhaustion(df, current_price, tr_bottom)
                         if is_spring:
+                            # Tính điểm Sức mạnh (RS) dựa trên biên độ 60 ngày
+                            rs_score = 0
+                            if len(df) >= 60:
+                                price_60d = float(df['Close'].iloc[-60])
+                                rs_score = round(((current_price - price_60d) / price_60d) * 100, 2)
+                                
                             signal_data = {
                                 "Date_Detected": df.index[-1].strftime('%Y-%m-%d'),
                                 "Ticker": ticker,
@@ -240,6 +269,7 @@ with tab_scan_chart:
                                 "Signal_Type": "Cạn cung (Spring) tại Hỗ trợ",
                                 "TR_Top": float(tr_top),
                                 "TR_Bottom": float(tr_bottom),
+                                "RS_Score": rs_score,
                                 "Status": "Mới phát hiện",
                                 "Timestamp": firestore.SERVER_TIMESTAMP
                             }
@@ -250,14 +280,13 @@ with tab_scan_chart:
                 
             progress_bar.progress((i + 1) / len(current_watchlist))
             
-        status_text.success(f"✅ Quét hoàn tất! Tìm thấy {signals_found} tín hiệu mới. Hệ thống đã cập nhật bảng Radar.")
-        st.cache_data.clear() # Xóa cache để làm mới bảng Tab 1
+        status_text.success(f"✅ Quét hoàn tất! Tìm thấy {signals_found} tín hiệu mới. Cập nhật bảng Radar để xem.")
+        st.cache_data.clear() 
 
     st.markdown("---")
     st.markdown("### 📈 Biểu Đồ Cấu Trúc Wyckoff Trực Quan")
-    st.write("Chọn mã cổ phiếu bất kỳ trong danh mục để AI tự động vẽ Khung giá (Trading Range) và Khối lượng.")
     
-    selected_chart_ticker = st.selectbox("Chọn mã cổ phiếu:", current_watchlist)
+    selected_chart_ticker = st.selectbox("Chọn mã cổ phiếu xem Chart:", current_watchlist)
     
     if selected_chart_ticker:
         end_date = datetime.now()
@@ -273,19 +302,15 @@ with tab_scan_chart:
                 
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
                 
-                # Biểu đồ Nến (Candlestick)
                 fig.add_trace(go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'], low=df_chart['Low'], close=df_chart['Close'], name="Giá"), row=1, col=1)
                 
-                # Vẽ Kháng cự / Hỗ trợ (Nếu AI tìm thấy)
                 if tr_top and tr_bottom:
                     fig.add_hline(y=tr_top, line_dash="dash", line_color="green", annotation_text="Kháng cự (AR)", row=1, col=1)
                     fig.add_hline(y=tr_bottom, line_dash="dash", line_color="red", annotation_text="Hỗ trợ (Spring)", row=1, col=1)
                 
-                # Vẽ MA200 (Kiểm tra xu hướng)
                 df_chart['MA200'] = df_chart['Close'].rolling(window=200).mean()
                 fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MA200'], line=dict(color='orange', width=1.5), name="MA200"), row=1, col=1)
                 
-                # Vẽ Volume
                 colors = ['red' if row['Close'] < row['Open'] else 'green' for index, row in df_chart.iterrows()]
                 fig.add_trace(go.Bar(x=df_chart.index, y=df_chart['Volume'], marker_color=colors, name="Khối lượng"), row=2, col=1)
                 
