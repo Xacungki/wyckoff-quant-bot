@@ -136,15 +136,15 @@ if __name__ == "__main__":
     print(f"⚙️ Áp dụng thông số cấu hình: {sys_params}")
     print(f"📊 Đang tiến hành quét {len(my_portfolio)} mã: {my_portfolio}")
     
-    # 4. Tự động lấy mốc thời gian (Quét 1 năm lùi lại từ hôm nay)
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=365)
+    vsa_engine = WyckoffVSASignal() # Khởi tạo bộ máy phân tích
     
-    vsa_engine = WyckoffVSASignal(sys_params)
-    
-    # 5. Vòng lặp quét từng mã
+    import time # Chèn thêm thư viện thời gian
+
     for ticker in my_portfolio:
         try:
+            time.sleep(0.5) # Nghỉ nửa giây giữa mỗi mã để tránh bị Yahoo Finance khóa IP
+            
+            # 1. Kéo dữ liệu
             fetcher = QuantDataFetcher(ticker)
             df = fetcher.fetch_daily_data(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
             
