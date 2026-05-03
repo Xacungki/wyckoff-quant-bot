@@ -198,4 +198,4 @@ with tab_scan_chart:
                 fig.update_layout(title=f"VSA & Dòng tiền: {selected_chart_ticker}", yaxis_title="Giá", xaxis_rangeslider_visible=False, height=600, template="plotly_white")
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.error(f"❌ KHÔNG CÓ DỮ LIỆU. Thư viện vnstock và yfinance đều bị chặn lấy mã {selected_chart_ticker}.")
+                st.error(f"❌ KHÔNG CÓ DỮ LIỆU. Thư viện vnstock bị chặn lấy mã {selected_chart_ticker}.")
