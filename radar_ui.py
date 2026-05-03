@@ -52,6 +52,40 @@ def init_firebase():
     return firestore.client()
 
 db = init_firebase()
+# ==========================================
+# MODULE: QUẢN LÝ DANH MỤC (WATCHLIST)
+# ==========================================
+st.sidebar.markdown("### ⚙️ Quản lý Danh mục Cổ phiếu")
+
+# 1. Đọc danh sách hiện tại từ Database
+doc_ref = db.collection("system_config").document("watchlist")
+doc = doc_ref.get()
+
+# Nếu chưa có kho lưu trữ, tự động tạo mới với vài mã mẫu
+if not doc.exists:
+    current_watchlist = ["FPT.VN", "VNM.VN", "AAPL", "NUS"]
+    doc_ref.set({"tickers": current_watchlist})
+else:
+    current_watchlist = doc.to_dict().get("tickers", [])
+
+# 2. Giao diện Thêm mã mới
+new_ticker = st.sidebar.text_input("Thêm mã định lượng (VD: VIC.VN):")
+if st.sidebar.button("➕ Thêm Mã"):
+    if new_ticker and new_ticker.upper() not in current_watchlist:
+        current_watchlist.append(new_ticker.upper())
+        doc_ref.update({"tickers": current_watchlist})
+        st.rerun() # Tải lại trang ngay lập tức
+
+# 3. Giao diện Danh sách & Xóa mã
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Danh sách đang rà soát:**")
+for ticker in current_watchlist:
+    col1, col2 = st.sidebar.columns([3, 1])
+    col1.write(f"📈 {ticker}")
+    if col2.button("❌", key=f"del_{ticker}"):
+        current_watchlist.remove(ticker)
+        doc_ref.update({"tickers": current_watchlist})
+        st.rerun()
 
 # 3. HÀM TẢI DỮ LIỆU TỪ FIRESTORE
 def load_signals():
