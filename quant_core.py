@@ -1,30 +1,59 @@
-import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
 import firebase_admin
 from firebase_admin import credentials, firestore
 import time
+import warnings
+from vnstock import stock_historical_data
+
+# Tắt các cảnh báo rác của thư viện
+warnings.filterwarnings('ignore')
 
 # ==========================================
-# KHỐI 1: LẤY DỮ LIỆU (Đã vá lỗi "Mù Dữ Liệu" các sàn HNX, UPCOM)
+# KHỐI 1: LẤY DỮ LIỆU TỪ CHỨNG KHOÁN VIỆT NAM (VNSTOCK)
 # ==========================================
 class QuantDataFetcher:
     def __init__(self, ticker):
-        self.original_ticker = ticker
-        self.base_ticker = ticker.replace(".VN", "")
+        # Làm sạch mã cổ phiếu (Xóa bỏ các đuôi .VN, .HM của Yahoo cũ)
+        self.base_ticker = str(ticker).upper().replace(".VN", "").replace(".HM", "").replace(".HN", "").replace(".UP", "").strip()
 
     def fetch_daily_data(self, start_date, end_date):
-        for suffix in [".HM", ".HN", ".UP", ""]:
-            yf_ticker = f"{self.base_ticker}{suffix}"
-            try:
-                df = yf.download(yf_ticker, start=start_date, end=end_date, interval="1d", progress=False)
-                if df is not None and not df.empty and len(df) > 0:
-                    if isinstance(df.columns, pd.MultiIndex):
-                        df.columns = df.columns.get_level_values(0)
-                    if 'Close' in df.columns:
-                        return df[['Open', 'High', 'Low', 'Close', 'Volume']]
-            except Exception:
-                continue
+        try:
+            # vnstock kéo dữ liệu trực tiếp từ các CTCK Việt Nam (Chuẩn 100%, không bị mù)
+            df = stock_historical_data(symbol=self.base_ticker, 
+                                       start_date=start_date, 
+                                       end_date=end_date, 
+                                       resolution='1D', 
+                                       type='stock')
+            
+            if df is not None and not df.empty and len(df) > 10:
+                # Đổi tên cột cho khớp với tiêu chuẩn của hệ thống Wyckoff
+                df = df.rename(columns={
+                    'time': 'Date',
+                    'open': 'Open',
+                    'high': 'High',
+                    'low': 'Low',
+                    'close': 'Close',
+                    'volume': 'Volume'
+                })
+                
+                # Chuyển đổi cột Date thành Index
+                df['Date'] = pd.to_datetime(df['Date'])
+                df.set_index('Date', inplace=True)
+                
+                # LỌC RÁC: Loại bỏ các ngày nghỉ, lễ không có thanh khoản
+                clean_df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+                clean_df = clean_df[clean_df['Volume'] > 0]
+                
+                # Đảm bảo có đủ 50 phiên để phân tích
+                if len(clean_df) > 50:
+                    # Fix lỗi kiểu dữ liệu
+                    for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+                        clean_df[col] = pd.to_numeric(clean_df[col], errors='coerce')
+                    return clean_df
+        except Exception as e:
+            print(f"Lỗi khi kéo dữ liệu {self.base_ticker}: {e}")
+            
         return None
 
 # ==========================================
@@ -35,8 +64,7 @@ class WyckoffVSASignal:
         self.params = sys_params
 
     def identify_trading_range(self, df):
-        if len(df) < 50:
-            return None, None
+        if len(df) < 50: return None, None
             
         ma_period = self.params.get("vol_ma_period", 20)
         sc_mult = self.params.get("sc_vol_multiplier", 2.5)
@@ -47,8 +75,7 @@ class WyckoffVSASignal:
         recent_data = df.tail(150)
         sc_candles = recent_data[recent_data['Is_SC'] == True]
         
-        if sc_candles.empty:
-            return None, None
+        if sc_candles.empty: return None, None
             
         sc_date = sc_candles['Volume'].idxmax()
         sc_index = df.index.get_loc(sc_date)
@@ -68,12 +95,10 @@ class WyckoffVSASignal:
             weekly_df = df.resample('W-FRI').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last', 'Volume':'sum'})
             weekly_df = weekly_df.dropna()
             weekly_df['MA30'] = weekly_df['Close'].rolling(30).mean()
-            
             if len(weekly_df) > 30 and weekly_df['Close'].iloc[-1] > weekly_df['MA30'].iloc[-1]:
                 return "TĂNG (Uptrend)"
             return "GIẢM (Downtrend)"
-        except Exception:
-            return "Không rõ"
+        except: return "Không rõ"
 
     def get_vsa_tags(self, df):
         if len(df) < 20: return ""
@@ -82,19 +107,15 @@ class WyckoffVSASignal:
             latest = df.iloc[-1]
             prev = df.iloc[-2]
             vol_ma = df['Volume'].rolling(20).mean().iloc[-1]
-            
             spread = latest['High'] - latest['Low']
             prev_spread = prev['High'] - prev['Low']
             
             if latest['Close'] < prev['Close'] and spread < prev_spread and latest['Volume'] < prev['Volume'] and latest['Volume'] < (vol_ma * 0.7):
                 tags.append("No Supply")
-                
             if latest['Close'] < prev['Close'] and latest['Volume'] > (vol_ma * 2.0) and latest['Close'] > (latest['Low'] + spread * 0.5):
                 tags.append("Stopping Vol")
-
             return ", ".join(tags) if tags else "Bình thường"
-        except Exception:
-            return "Bình thường"
+        except: return "Bình thường"
 
     def detect_advanced_signals(self, df, current_price, tr_top, tr_bottom):
         ma_period = self.params.get("vol_ma_period", 20)
@@ -108,103 +129,71 @@ class WyckoffVSASignal:
         latest_low = float(df['Low'].iloc[-1])
         latest_close = float(df['Close'].iloc[-1])
 
-        if (tr_bottom * 0.85) <= current_price <= (tr_bottom * tolerance) and latest_vol < (latest_sma * vol_ratio):
+        # Tính toán tín hiệu dựa theo biên độ giá & Volume
+        if (tr_bottom * 0.80) <= current_price <= (tr_bottom * tolerance) and latest_vol < (latest_sma * vol_ratio):
             return "Spring (Mua)"
-            
         if (tr_top * 0.95) <= current_price <= (tr_top * 1.05) and latest_vol < (latest_sma * vol_ratio):
             return "Back-up (Mua)"
-            
         if current_price > (tr_top * 0.98) and latest_vol > (latest_sma * 1.5) and latest_close > (latest_high + latest_low) / 2:
             return "SOS Vượt đỉnh (Mua)"
-
         if latest_high > tr_top and latest_close < (latest_high + latest_low) / 2 and latest_vol > (latest_sma * 1.5):
             return "Upthrust (Bán)"
-
         return None
 
 # ==========================================
-# KHỐI 3: QUẢN TRỊ CƠ SỞ DỮ LIỆU ĐÁM MÂY
+# KHỐI 3: DATABASE & CHẠY TỰ ĐỘNG
 # ==========================================
 class FirestoreManager:
     def __init__(self, key_path="firebase_key.json"):
         try:
             cred = credentials.Certificate(key_path)
-            if not firebase_admin._apps:
-                firebase_admin.initialize_app(cred)
+            if not firebase_admin._apps: firebase_admin.initialize_app(cred)
             self.db = firestore.client()
-        except Exception as e:
-            print(f"[!] Lỗi kết nối Database: {e}")
-            self.db = None
+        except: self.db = None
 
     def push_signal(self, signal_data):
         if not self.db: return
-        try:
-            doc_ref = self.db.collection('wyckoff_signals').document()
-            doc_ref.set(signal_data)
-        except Exception as e:
-            print(f"Lỗi đẩy dữ liệu: {e}")
+        try: self.db.collection('wyckoff_signals').document().set(signal_data)
+        except: pass
 
-# ==========================================
-# KHỐI 4: KÍCH HOẠT HỆ THỐNG QUÉT TỰ ĐỘNG
-# ==========================================
 if __name__ == "__main__":
     db_manager = FirestoreManager()
     db = db_manager.db
     if db is None: exit()
         
     try:
-        doc_ref = db.collection("system_config").document("watchlist")
-        doc = doc_ref.get()
-        my_portfolio = doc.to_dict().get("tickers", []) if doc.exists else ["FPT.VN"]
-    except:
-        my_portfolio = ["FPT.VN"]
+        doc = db.collection("system_config").document("watchlist").get()
+        my_portfolio = doc.to_dict().get("tickers", []) if doc.exists else ["FPT"]
+    except: my_portfolio = ["FPT"]
     
     try:
-        param_ref = db.collection("system_config").document("wyckoff_params")
-        param_doc = param_ref.get()
-        sys_params = param_doc.to_dict() if param_doc.exists else {
-            "vol_ma_period": 20, "sc_vol_multiplier": 2.5, "spring_vol_ratio": 0.5, "spring_price_tolerance": 1.05
-        }
-    except:
-        sys_params = {"vol_ma_period": 20, "sc_vol_multiplier": 2.5, "spring_vol_ratio": 0.5, "spring_price_tolerance": 1.05}
+        param_doc = db.collection("system_config").document("wyckoff_params").get()
+        sys_params = param_doc.to_dict() if param_doc.exists else {"vol_ma_period": 20, "sc_vol_multiplier": 2.5, "spring_vol_ratio": 0.5, "spring_price_tolerance": 1.05}
+    except: sys_params = {"vol_ma_period": 20, "sc_vol_multiplier": 2.5, "spring_vol_ratio": 0.5, "spring_price_tolerance": 1.05}
         
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=365)
+    end_date = datetime.now().strftime('%Y-%m-%d')
+    start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
     vsa_engine = WyckoffVSASignal(sys_params)
     
     for ticker in my_portfolio:
         try:
-            time.sleep(0.3)
+            time.sleep(0.1) # vnstock rất mạnh, chỉ cần nghỉ 0.1s là đủ
             fetcher = QuantDataFetcher(ticker)
-            df = fetcher.fetch_daily_data(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
+            df = fetcher.fetch_daily_data(start_date, end_date)
             
             if df is not None and len(df) > 60:
                 current_price = float(df['Close'].iloc[-1])
                 tr_top, tr_bottom = vsa_engine.identify_trading_range(df)
-                
                 if tr_top is None or tr_bottom is None: continue 
                 
                 signal_type = vsa_engine.detect_advanced_signals(df, current_price, tr_top, tr_bottom)
-                
                 if signal_type:
                     rs_score = round(((current_price - float(df['Close'].iloc[-60])) / float(df['Close'].iloc[-60])) * 100, 2)
-                    weekly_trend = vsa_engine.check_weekly_trend(df)
-                    vsa_tags = vsa_engine.get_vsa_tags(df)
-                        
                     signal_data = {
-                        "Date_Detected": df.index[-1].strftime('%Y-%m-%d'),
-                        "Ticker": ticker,
-                        "Price": float(current_price),
-                        "Signal_Type": signal_type,
-                        "TR_Top": float(tr_top),
-                        "TR_Bottom": float(tr_bottom),
-                        "RS_Score": rs_score,
-                        "Weekly_Trend": weekly_trend,
-                        "VSA_Tags": vsa_tags,
-                        "Status": "Mới phát hiện",
-                        "Timestamp": firestore.SERVER_TIMESTAMP
+                        "Date_Detected": df.index[-1].strftime('%Y-%m-%d'), "Ticker": ticker, "Price": float(current_price),
+                        "Signal_Type": signal_type, "TR_Top": float(tr_top), "TR_Bottom": float(tr_bottom), "RS_Score": rs_score,
+                        "Weekly_Trend": vsa_engine.check_weekly_trend(df), "VSA_Tags": vsa_engine.get_vsa_tags(df),
+                        "Status": "Mới phát hiện", "Timestamp": firestore.SERVER_TIMESTAMP
                     }
                     db_manager.push_signal(signal_data)
-                    
-        except Exception:
-            pass
+        except: pass
