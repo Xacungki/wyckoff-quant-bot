@@ -182,59 +182,76 @@ if not df_signals.empty:
     col2.metric("Ngày Cập Nhật Gần Nhất", df_signals['Date_Detected'].iloc[0])
     
     import pandas as pd # Đảm bảo dòng này có ở đầu file
+# --- BẮT ĐẦU TỪ DÒNG 185 ---
 
-# ... (các phần kết nối db ở trên giữ nguyên) ...
+# 1. KHỞI TẠO HỆ THỐNG TAB (Chia ngăn giao diện)
+tab_radar, tab_knowledge = st.tabs(["📡 Radar Tín Hiệu", "🧠 Trạm Nạp Kiến Thức"])
 
-st.markdown("### Danh sách Báo cáo Chi tiết")
+with tab_radar:
+    st.markdown("### Danh sách Báo cáo Chi tiết")
+    
+    # Lấy dữ liệu từ Firestore (Sắp xếp mới nhất lên đầu)
+    signals_ref = db.collection("wyckoff_signals").order_by("Date_Detected", direction=firestore.Query.DESCENDING).limit(30)
+    docs = signals_ref.stream()
 
-# 1. Lấy dữ liệu từ Firestore (Sắp xếp mới nhất lên đầu)
-signals_ref = db.collection("wyckoff_signals").order_by("Date_Detected", direction=firestore.Query.DESCENDING).limit(30)
-docs = signals_ref.stream()
+    data = []
+    for doc in docs:
+        sig = doc.to_dict()
+        entry_price = sig.get("Price", 0)
+        tr_top = sig.get("TR_Top", 0)
+        tr_bottom = sig.get("TR_Bottom", 0)
+        
+        # Tính toán Risk/Reward (R:R)
+        stop_loss = tr_bottom * 0.98 if tr_bottom else 0
+        rr_ratio = "N/A"
+        if entry_price > 0 and tr_top > entry_price and stop_loss > 0:
+            risk = entry_price - stop_loss
+            reward = tr_top - entry_price
+            if risk > 0:
+                rr_ratio = f"1 : {reward/risk:.1f}"
+        
+        ticker = sig.get("Ticker", "")
+        is_vn = ".VN" in ticker
+        
+        data.append({
+            "Ngày": sig.get("Date_Detected", ""),
+            "Mã CK": ticker,
+            "Giá Vào": f"{entry_price:,.0f}" if is_vn else f"${entry_price:,.2f}",
+            "Cắt Lỗ (SL)": f"{stop_loss:,.0f}" if is_vn and stop_loss else (f"${stop_loss:,.2f}" if stop_loss else "-"),
+            "Chốt Lời (TP)": f"{tr_top:,.0f}" if is_vn and tr_top else (f"${tr_top:,.2f}" if tr_top else "-"),
+            "Tỷ lệ R:R": rr_ratio,
+            "Tín Hiệu": sig.get("Signal_Type", "")
+        })
 
-data = []
-for doc in docs:
-    sig = doc.to_dict()
-    
-    # 2. Rút trích Dữ liệu Bối cảnh
-    entry_price = sig.get("Price", 0)
-    tr_top = sig.get("TR_Top", 0)
-    tr_bottom = sig.get("TR_Bottom", 0)
-    
-    # 3. TÍNH TOÁN QUẢN TRỊ VỐN (RISK:REWARD)
-    # Stoploss: Đặt dưới đáy TR 2% để tránh quét râu nến (Shakeout)
-    stop_loss = tr_bottom * 0.98 if tr_bottom else 0
-    
-    rr_ratio = "N/A"
-    if entry_price > 0 and tr_top > entry_price and stop_loss > 0:
-        risk = entry_price - stop_loss
-        reward = tr_top - entry_price
-        if risk > 0:
-            rr = reward / risk
-            rr_ratio = f"1 : {rr:.1f}" # Ví dụ: 1 : 3.5
-            
-    # Định dạng tiền tệ: VNĐ thì không số thập phân, USD thì 2 số
-    ticker = sig.get("Ticker", "")
-    is_vn = ".VN" in ticker
-    
-    data.append({
-        "Ngày": sig.get("Date_Detected", ""),
-        "Mã CK": ticker,
-        "Giá Vào (Entry)": f"{entry_price:,.0f}" if is_vn else f"${entry_price:,.2f}",
-        "Cắt Lỗ (SL)": f"{stop_loss:,.0f}" if is_vn and stop_loss else (f"${stop_loss:,.2f}" if stop_loss else "-"),
-        "Chốt Lời (TP)": f"{tr_top:,.0f}" if is_vn and tr_top else (f"${tr_top:,.2f}" if tr_top else "-"),
-        "Tỷ lệ R:R": rr_ratio,
-        "Tín Hiệu": sig.get("Signal_Type", "")
-    })
+    if data:
+        st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
+    else:
+        st.info("Hiện chưa có tín hiệu mới nào đạt chuẩn.")
 
-# 4. Render Bảng dữ liệu lên Web
-if data:
-    df = pd.DataFrame(data)
+with tab_knowledge:
+    st.subheader("🧠 Huấn luyện Tư duy cho AI")
+    st.info("Nạp thêm link bài phân tích hoặc quy tắc mới để AI tự động nâng cấp bộ lọc thẩm định.")
     
-    # CSS Highlight cho cột R:R bằng công cụ của Streamlit
-    st.dataframe(
-        df,
-        use_container_width=True,
-        hide_index=True
-    )
-else:
-    st.info("Chưa có tín hiệu cạn cung nào được ghi nhận.")
+    # Form nạp tri thức
+    web_link = st.text_input("Dán link tài liệu (TradingView, Sách online, Bài báo...):")
+    link_note = st.text_area("Ghi chú nhanh cho AI về link này (Không bắt buộc):")
+    
+    if st.button("Xác nhận Nạp Link"):
+        if web_link:
+            from datetime import datetime # Import trực tiếp để tránh lỗi
+            db.collection("knowledge_hub").add({
+                "type": "link",
+                "content": web_link,
+                "note": link_note,
+                "date_added": datetime.now().strftime("%Y-%m-%d %H:%M")
+            })
+            st.success("✅ Đã nạp thành công vào Bộ nhớ tri thức!")
+            st.rerun()
+
+    st.markdown("---")
+    st.markdown("**Thư viện tri thức hiện có:**")
+    # Hiển thị danh sách link đã nạp
+    know_docs = db.collection("knowledge_hub").order_by("date_added", direction=firestore.Query.DESCENDING).stream()
+    for k_doc in know_docs:
+        item = k_doc.to_dict()
+        st.write(f"🔗 {item.get('content')} - *{item.get('date_added')}*")
