@@ -4,33 +4,17 @@ import json
 from datetime import datetime, timedelta
 import firebase_admin
 from firebase_admin import credentials, firestore
-
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
-
-# Import Lõi Quét
 from quant_core import QuantDataFetcher, WyckoffVSASignal
 
 # ==========================================
-# 1. CẤU HÌNH GIAO DIỆN LIGHT LUXURY
+# 1. CẤU HÌNH GIAO DIỆN
 # ==========================================
 st.set_page_config(page_title="Wyckoff Quant Radar PRO", layout="wide", page_icon="📡")
+st.markdown("""<style>.stApp { background-color: #FAF9F6; color: #333333; } h1 { color: #1A1A1A; border-bottom: 2px solid #D4AF37; padding-bottom: 10px; } .stDataFrame { box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05); border-radius: 8px; } div[data-testid="stMetricValue"] { color: #D4AF37; }</style>""", unsafe_allow_html=True)
 
-st.markdown("""
-    <style>
-        .stApp { background-color: #FAF9F6; color: #333333; }
-        h1 { color: #1A1A1A; border-bottom: 2px solid #D4AF37; padding-bottom: 10px; font-family: 'Helvetica Neue', sans-serif; }
-        .stDataFrame { box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05); border-radius: 8px; overflow: hidden; }
-        div[data-testid="stMetricValue"] { color: #D4AF37; }
-        .stButton>button { border: 1px solid #D4AF37; border-radius: 5px; font-weight: bold; transition: all 0.3s; }
-        .stButton>button:hover { background-color: #D4AF37; color: white; }
-    </style>
-""", unsafe_allow_html=True)
-
-# ==========================================
-# BỘ TỪ ĐIỂN CỔ PHIẾU TOÀN THỊ TRƯỜNG
-# ==========================================
 SECTORS = {
     "🏦 Ngân hàng": ["VCB.VN", "BID.VN", "CTG.VN", "TCB.VN", "VPB.VN", "MBB.VN", "ACB.VN", "STB.VN", "HDB.VN", "VIB.VN", "TPB.VN", "SHB.VN", "EIB.VN", "MSB.VN", "OCB.VN", "LPB.VN"],
     "🏢 Bất động sản": ["VHM.VN", "VIC.VN", "VRE.VN", "NVL.VN", "DIG.VN", "DXG.VN", "KDH.VN", "NLG.VN", "PDR.VN", "CEO.VN", "HDG.VN", "DXS.VN", "CRE.VN", "SZC.VN", "KBC.VN", "IDC.VN"],
@@ -48,102 +32,63 @@ SECTORS = {
 TICKER_TO_SECTOR = {}
 for sector_name, tickers in SECTORS.items():
     clean_name = sector_name.split(" ", 1)[1]
-    for t in tickers:
-        TICKER_TO_SECTOR[t] = clean_name
+    for t in tickers: TICKER_TO_SECTOR[t] = clean_name
 
-# ==========================================
-# 2. KẾT NỐI CƠ SỞ DỮ LIỆU ĐÁM MÂY
-# ==========================================
 @st.cache_resource
 def init_firebase():
     if not firebase_admin._apps:
         if "FIREBASE_JSON" in st.secrets:
             key_dict = json.loads(st.secrets["FIREBASE_JSON"])
             cred = credentials.Certificate(key_dict)
-        else:
-            cred = credentials.Certificate("firebase_key.json")
+        else: cred = credentials.Certificate("firebase_key.json")
         firebase_admin.initialize_app(cred)
     return firestore.client()
 
-try:
-    db = init_firebase()
-except Exception as e:
-    st.error(f"Lỗi kết nối Cơ sở dữ liệu: {e}")
-    st.stop()
+try: db = init_firebase()
+except Exception as e: st.error("Lỗi Database"); st.stop()
 
 # ==========================================
-# MODULE: QUẢN LÝ DANH MỤC
+# SIDEBAR
 # ==========================================
 st.sidebar.markdown("### ⚙️ Quản lý Danh mục")
-
 doc_ref = db.collection("system_config").document("watchlist")
 doc = doc_ref.get()
-
-current_watchlist = doc.to_dict().get("tickers", []) if doc.exists else ["FPT.VN", "VNM.VN", "AAPL"]
+current_watchlist = doc.to_dict().get("tickers", []) if doc.exists else ["FPT.VN"]
 
 if st.sidebar.button("🌐 THÊM TOÀN THỊ TRƯỜNG (TOP 100)"):
-    all_tickers = list(TICKER_TO_SECTOR.keys())
-    doc_ref.set({"tickers": all_tickers})
-    st.sidebar.success(f"Đã nạp {len(all_tickers)} mã vào Radar!")
+    doc_ref.set({"tickers": list(TICKER_TO_SECTOR.keys())})
     st.rerun()
 
-st.sidebar.markdown("---")
 new_ticker = st.sidebar.text_input("Thêm mã đơn lẻ:")
-if st.sidebar.button("➕ Thêm Mã"):
-    if new_ticker and new_ticker.upper() not in current_watchlist:
+if st.sidebar.button("➕ Thêm Mã") and new_ticker:
+    if new_ticker.upper() not in current_watchlist:
         current_watchlist.append(new_ticker.upper())
         doc_ref.set({"tickers": current_watchlist})
         st.rerun()
 
-selected_sector = st.sidebar.selectbox("Lọc tự động theo Ngành:", list(SECTORS.keys()))
-if st.sidebar.button("📥 Thêm toàn bộ Ngành này"):
-    added_count = 0
-    for t in SECTORS[selected_sector]:
-        if t not in current_watchlist:
-            current_watchlist.append(t)
-            added_count += 1
-    if added_count > 0:
-        doc_ref.set({"tickers": current_watchlist})
-        st.sidebar.success(f"Đã thêm {added_count} mã ngành!")
-        st.rerun()
-
-st.sidebar.markdown("---")
 st.sidebar.markdown(f"**Đang rà soát: {len(current_watchlist)} mã**")
-
 if st.sidebar.button("🗑️ XÓA TOÀN BỘ DANH SÁCH"):
     doc_ref.set({"tickers": []})
     st.rerun()
 
-# ==========================================
-# MODULE: BẢNG ĐIỀU KHIỂN BIẾN SỐ
-# ==========================================
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🎛️ Bảng Điều Khiển Wyckoff")
-
 param_ref = db.collection("system_config").document("wyckoff_params")
 param_doc = param_ref.get()
-
-current_params = param_doc.to_dict() if param_doc.exists else {
-    "vol_ma_period": 20, "sc_vol_multiplier": 2.5, "spring_vol_ratio": 0.5, "spring_price_tolerance": 1.05
-}
+current_params = param_doc.to_dict() if param_doc.exists else {"vol_ma_period": 20, "sc_vol_multiplier": 2.5, "spring_vol_ratio": 0.5, "spring_price_tolerance": 1.05}
 
 with st.sidebar.form("param_form"):
-    new_ma = st.number_input("Chu kỳ MA Khối lượng", min_value=10, max_value=50, value=int(current_params.get("vol_ma_period", 20)))
-    new_sc_mult = st.slider("Hệ số Vol (Selling Climax)", 1.5, 5.0, float(current_params.get("sc_vol_multiplier", 2.5)), 0.1)
+    new_ma = st.number_input("Chu kỳ MA", 10, 50, int(current_params.get("vol_ma_period", 20)))
+    new_sc_mult = st.slider("Hệ số Vol Selling Climax", 1.5, 5.0, float(current_params.get("sc_vol_multiplier", 2.5)), 0.1)
     new_spring_vol = st.slider("Ngưỡng Vol Cạn cung", 0.1, 1.0, float(current_params.get("spring_vol_ratio", 0.5)), 0.1)
-    new_tolerance = st.slider("Độ lệch giá tại đáy (%)", 1.0, 15.0, float((current_params.get("spring_price_tolerance", 1.05) - 1) * 100), 0.5)
-
+    new_tolerance = st.slider("Độ lệch đáy (%)", 1.0, 15.0, float((current_params.get("spring_price_tolerance", 1.05) - 1) * 100), 0.5)
     if st.form_submit_button("Lưu Cấu Hình"):
-        current_params = {
-            "vol_ma_period": new_ma, "sc_vol_multiplier": new_sc_mult,
-            "spring_vol_ratio": new_spring_vol, "spring_price_tolerance": 1 + (new_tolerance / 100)
-        }
+        current_params = {"vol_ma_period": new_ma, "sc_vol_multiplier": new_sc_mult, "spring_vol_ratio": new_spring_vol, "spring_price_tolerance": 1 + (new_tolerance / 100)}
         param_ref.set(current_params)
-        st.success("✅ Đã cập nhật tham số!")
         st.rerun()
 
 # ==========================================
-# GIAO DIỆN CHÍNH (MAIN DASHBOARD)
+# MAIN UI
 # ==========================================
 st.title("Trạm Radar Tín Hiệu Định Lượng PRO")
 
@@ -153,17 +98,10 @@ def load_signals():
     return pd.DataFrame([doc.to_dict() for doc in docs])
 
 df_signals = load_signals()
-
 col1, col2, col3 = st.columns(3)
-total_signals = len(df_signals) if not df_signals.empty else 0
-latest_date = df_signals['Date_Detected'].iloc[0] if not df_signals.empty else "Chưa có dữ liệu"
-
-buy_count = len(df_signals[df_signals['Signal_Type'].str.contains("Mua", na=False)]) if not df_signals.empty else 0
-sell_count = len(df_signals[df_signals['Signal_Type'].str.contains("Bán", na=False)]) if not df_signals.empty else 0
-
-col1.metric("Tổng Tín Hiệu Trong Bảng", total_signals)
-col2.metric("🟢 Khuyến Nghị MUA", buy_count)
-col3.metric("🔴 Cảnh Báo BÁN", sell_count)
+col1.metric("Tổng Tín Hiệu", len(df_signals))
+col2.metric("🟢 Khuyến Nghị MUA", len(df_signals[df_signals['Signal_Type'].str.contains("Mua", na=False)]) if not df_signals.empty else 0)
+col3.metric("🔴 Cảnh Báo BÁN", len(df_signals[df_signals['Signal_Type'].str.contains("Bán", na=False)]) if not df_signals.empty else 0)
 
 @st.cache_data
 def convert_df_to_csv(df):
@@ -171,161 +109,74 @@ def convert_df_to_csv(df):
 
 tab_radar, tab_heatmap, tab_scan_chart = st.tabs(["📡 Radar Đa Khung", "🗺️ Bản Đồ Dòng Tiền", "🚀 Quét & Biểu Đồ VSA"])
 
-# --- TAB 1: RADAR ---
 with tab_radar:
-    st.markdown("### Danh sách Báo cáo & Đánh giá Xu hướng")
     if not df_signals.empty:
-        data = []
-        for index, sig in df_signals.iterrows():
-            entry_price = sig.get("Price", 0)
-            tr_top = sig.get("TR_Top", 0)
-            tr_bottom = sig.get("TR_Bottom", 0)
-            rs_score = sig.get("RS_Score", "N/A")
-            weekly_trend = sig.get("Weekly_Trend", "N/A")
-            vsa_tags = sig.get("VSA_Tags", "")
-            
-            stop_loss = tr_bottom * 0.98 if tr_bottom else 0
-            rr_ratio = "N/A"
-            if entry_price > 0 and tr_top > entry_price and stop_loss > 0:
-                risk = entry_price - stop_loss
-                reward = tr_top - entry_price
-                if risk > 0: rr_ratio = f"1 : {reward/risk:.1f}"
-            
-            ticker = sig.get("Ticker", "")
-            is_vn = ".VN" in ticker or ".HM" in ticker or ".HN" in ticker
-            sector = TICKER_TO_SECTOR.get(ticker, "Khác")
-            
-            sig_type = sig.get("Signal_Type", "")
-            if "Mua" in sig_type: sig_type = f"🟢 {sig_type}"
-            elif "Bán" in sig_type: sig_type = f"🔴 {sig_type}"
-            
-            data.append({
-                "Ngày": sig.get("Date_Detected", ""),
-                "Mã CK": ticker,
-                "Nhóm Ngành": sector,
-                "Tín Hiệu": sig_type,
-                "Trend Tuần": f"📈 TĂNG" if "TĂNG" in weekly_trend else f"📉 GIẢM",
-                "Mẫu Hình Nến (VSA)": vsa_tags,
-                "Điểm RS": f"{rs_score}%" if isinstance(rs_score, (int, float)) else rs_score,
-                "Giá Báo": f"{entry_price:,.0f}" if is_vn else f"${entry_price:,.2f}",
-                "Cắt Lỗ": f"{stop_loss:,.0f}" if is_vn and stop_loss else (f"${stop_loss:,.2f}" if stop_loss else "-"),
-                "Tỷ lệ R:R": rr_ratio,
-            })
+        df_display = df_signals.copy()
+        df_display['Nhóm Ngành'] = df_display['Ticker'].apply(lambda x: TICKER_TO_SECTOR.get(x, "Khác"))
+        st.dataframe(df_display[['Date_Detected', 'Ticker', 'Nhóm Ngành', 'Signal_Type', 'Price', 'TR_Top', 'TR_Bottom', 'RS_Score', 'Weekly_Trend', 'VSA_Tags']], use_container_width=True, hide_index=True)
+    else: st.info("Chưa có tín hiệu.")
 
-        df_display = pd.DataFrame(data)
-        
-        c1, c2 = st.columns([3, 1])
-        with c1:
-            st.info("💡 **Tín Hiệu Đa Khung:** Mua khi Tín hiệu là 🟢 Spring/BU + Trend Tuần là 📈 TĂNG + Nến VSA báo No Supply.")
-        with c2:
-            csv = convert_df_to_csv(df_display)
-            st.download_button(
-                label="📥 Tải Báo Cáo Khuyến Nghị", data=csv,
-                file_name=f"Wyckoff_Pro_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv", use_container_width=True
-            )
-
-        st.dataframe(df_display, use_container_width=True, hide_index=True)
-    else:
-        st.info("Hiện chưa có tín hiệu mới nào đạt chuẩn.")
-
-# --- TAB 2: HEATMAP ---
 with tab_heatmap:
-    st.markdown("### 🗺️ Bản Đồ Nhiệt Dòng Tiền Theo Ngành")
     if not df_signals.empty:
         df_buy = df_signals[df_signals['Signal_Type'].str.contains("Mua", na=False, case=False)].copy()
         if not df_buy.empty:
             df_buy['Sector'] = df_buy['Ticker'].apply(lambda x: TICKER_TO_SECTOR.get(x, "Khác"))
-            fig_tree = px.treemap(
-                df_buy, path=[px.Constant("Thị Trường"), 'Sector', 'Ticker'], 
-                values='RS_Score', color='RS_Score', color_continuous_scale='RdYlGn',
-                title="Bản đồ Ngành (Kích thước & Màu sắc = Sức mạnh dòng tiền RS)"
-            )
-            fig_tree.update_layout(height=600, margin=dict(t=50, l=10, r=10, b=10))
+            fig_tree = px.treemap(df_buy, path=[px.Constant("Thị Trường"), 'Sector', 'Ticker'], values='RS_Score', color='RS_Score', color_continuous_scale='RdYlGn')
             st.plotly_chart(fig_tree, use_container_width=True)
-        else:
-            st.warning("Hiện không có cổ phiếu nào báo điểm MUA để vẽ Bản đồ dòng tiền.")
-    else:
-        st.info("Chưa có dữ liệu.")
 
-# --- TAB 3: QUÉT & BIỂU ĐỒ ---
 with tab_scan_chart:
-    st.markdown("### 🚀 Quét Thị Trường Đa Khung Thời Gian")
-    
     if st.button("▶️ KHỞI CHẠY MÁY QUÉT NGAY LẬP TỨC", use_container_width=True):
         progress_bar = st.progress(0)
         status_text = st.empty()
         signals_found = 0
         error_count = 0
         
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=365)
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
         vsa_engine = WyckoffVSASignal(current_params)
         
         import time
         for i, ticker in enumerate(current_watchlist):
-            status_text.text(f"Đang phân tích Đa Khung: {ticker}...")
+            status_text.text(f"Đang phân tích: {ticker}...")
             try:
-                time.sleep(0.3)
                 fetcher = QuantDataFetcher(ticker)
-                df = fetcher.fetch_daily_data(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
+                df = fetcher.fetch_daily_data(start_date, end_date)
                 
-                # HIỂN THỊ CẢNH BÁO NẾU MÙ DỮ LIỆU
                 if df is None or df.empty:
-                    st.toast(f"⚠️ Mù dữ liệu: Yahoo Finance không trả về số liệu cho {ticker}")
                     error_count += 1
                     continue
                 
-                if len(df) > 60:
-                    current_price = float(df['Close'].iloc[-1])
-                    tr_top, tr_bottom = vsa_engine.identify_trading_range(df)
-                    
-                    if tr_top is not None and tr_bottom is not None:
-                        signal_type = vsa_engine.detect_advanced_signals(df, current_price, tr_top, tr_bottom)
-                        if signal_type:
-                            weekly_trend = vsa_engine.check_weekly_trend(df)
-                            vsa_tags = vsa_engine.get_vsa_tags(df)
-                            price_60d = float(df['Close'].iloc[-60])
-                            rs_score = round(((current_price - price_60d) / price_60d) * 100, 2)
-                                
-                            signal_data = {
-                                "Date_Detected": df.index[-1].strftime('%Y-%m-%d'),
-                                "Ticker": ticker,
-                                "Price": float(current_price),
-                                "Signal_Type": signal_type,
-                                "TR_Top": float(tr_top),
-                                "TR_Bottom": float(tr_bottom),
-                                "RS_Score": rs_score,
-                                "Weekly_Trend": weekly_trend,
-                                "VSA_Tags": vsa_tags,
-                                "Status": "Mới phát hiện",
-                                "Timestamp": firestore.SERVER_TIMESTAMP
-                            }
-                            db.collection('wyckoff_signals').add(signal_data)
-                            signals_found += 1
-            except Exception as e:
-                st.toast(f"❌ Lỗi xử lý {ticker}: {e}")
-                error_count += 1
+                current_price = float(df['Close'].iloc[-1])
+                tr_top, tr_bottom = vsa_engine.identify_trading_range(df)
                 
+                if tr_top is not None:
+                    signal_type = vsa_engine.detect_advanced_signals(df, current_price, tr_top, tr_bottom)
+                    if signal_type:
+                        db.collection('wyckoff_signals').add({
+                            "Date_Detected": df.index[-1].strftime('%Y-%m-%d'), "Ticker": ticker, "Price": current_price,
+                            "Signal_Type": signal_type, "TR_Top": tr_top, "TR_Bottom": tr_bottom, 
+                            "RS_Score": round(((current_price - float(df['Close'].iloc[-60])) / float(df['Close'].iloc[-60])) * 100, 2),
+                            "Weekly_Trend": vsa_engine.check_weekly_trend(df), "VSA_Tags": vsa_engine.get_vsa_tags(df),
+                            "Timestamp": firestore.SERVER_TIMESTAMP
+                        })
+                        signals_found += 1
+            except: error_count += 1
             progress_bar.progress((i + 1) / len(current_watchlist))
             
-        status_text.success(f"✅ Quét hoàn tất! Tìm thấy {signals_found} tín hiệu. Bị lỗi/Mù dữ liệu: {error_count} mã.")
+        status_text.success(f"✅ Quét xong! Tìm thấy {signals_found} tín hiệu. Bị mù dữ liệu: {error_count} mã.")
         st.cache_data.clear() 
 
-    st.markdown("---")
     st.markdown("### 📈 Biểu Đồ Cấu Trúc Wyckoff Trực Quan")
-    
     selected_chart_ticker = st.selectbox("Chọn mã cổ phiếu xem Chart:", current_watchlist)
     
     if selected_chart_ticker:
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=365)
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
         
-        with st.spinner("Đang tải dữ liệu biểu đồ..."):
+        with st.spinner("Đang tải dữ liệu trực tiếp từ VNSTOCK..."):
             fetcher = QuantDataFetcher(selected_chart_ticker)
-            df_chart = fetcher.fetch_daily_data(start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
+            df_chart = fetcher.fetch_daily_data(start_date, end_date)
             
-            # CẢNH BÁO RÕ RÀNG NẾU KHÔNG CÓ DỮ LIỆU ĐỂ VẼ BIỂU ĐỒ
             if df_chart is not None and not df_chart.empty:
                 vsa_engine = WyckoffVSASignal(current_params)
                 tr_top, tr_bottom = vsa_engine.identify_trading_range(df_chart)
@@ -334,16 +185,15 @@ with tab_scan_chart:
                 fig.add_trace(go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'], low=df_chart['Low'], close=df_chart['Close'], name="Giá"), row=1, col=1)
                 
                 if tr_top and tr_bottom:
-                    fig.add_hline(y=tr_top, line_dash="dash", line_color="green", annotation_text="Kháng cự (AR/BU)", row=1, col=1)
-                    fig.add_hline(y=tr_bottom, line_dash="dash", line_color="red", annotation_text="Hỗ trợ (SC/Spring)", row=1, col=1)
-                
-                df_chart['MA200'] = df_chart['Close'].rolling(window=200).mean()
-                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MA200'], line=dict(color='orange', width=1.5), name="MA200"), row=1, col=1)
+                    fig.add_hline(y=tr_top, line_dash="dash", line_color="green", annotation_text="Kháng cự", row=1, col=1)
+                    fig.add_hline(y=tr_bottom, line_dash="dash", line_color="red", annotation_text="Hỗ trợ", row=1, col=1)
                 
                 colors = ['red' if row['Close'] < row['Open'] else 'green' for index, row in df_chart.iterrows()]
                 fig.add_trace(go.Bar(x=df_chart.index, y=df_chart['Volume'], marker_color=colors, name="Khối lượng"), row=2, col=1)
                 
-                fig.update_layout(title=f"Cấu trúc VSA & Dòng tiền: {selected_chart_ticker}", yaxis_title="Giá", xaxis_rangeslider_visible=False, height=600, template="plotly_white")
+                # Nối liền biểu đồ không bị đứt đoạn cuối tuần
+                fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+                fig.update_layout(title=f"VSA & Dòng tiền: {selected_chart_ticker} (Nguồn: VNSTOCK)", yaxis_title="Giá", xaxis_rangeslider_visible=False, height=600, template="plotly_white")
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.error(f"❌ KHÔNG THỂ TẢI DỮ LIỆU cho {selected_chart_ticker}. Máy chủ Yahoo Finance từ chối truy xuất hoặc mã không tồn tại.")
+                st.error(f"❌ VNSTOCK không phản hồi dữ liệu cho {selected_chart_ticker}.")
