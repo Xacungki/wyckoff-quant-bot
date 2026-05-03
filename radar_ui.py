@@ -120,6 +120,60 @@ if not df_signals.empty:
     
     st.write("### Danh sách Báo cáo Chi tiết")
     # Hiển thị bảng dữ liệu toàn màn hình
-    st.dataframe(df_signals, use_container_width=True, hide_index=True)
+    import pandas as pd # Đảm bảo dòng này có ở đầu file
+
+# ... (các phần kết nối db ở trên giữ nguyên) ...
+
+st.markdown("### Danh sách Báo cáo Chi tiết")
+
+# 1. Lấy dữ liệu từ Firestore (Sắp xếp mới nhất lên đầu)
+signals_ref = db.collection("wyckoff_signals").order_by("Date_Detected", direction=firestore.Query.DESCENDING).limit(30)
+docs = signals_ref.stream()
+
+data = []
+for doc in docs:
+    sig = doc.to_dict()
+    
+    # 2. Rút trích Dữ liệu Bối cảnh
+    entry_price = sig.get("Price", 0)
+    tr_top = sig.get("TR_Top", 0)
+    tr_bottom = sig.get("TR_Bottom", 0)
+    
+    # 3. TÍNH TOÁN QUẢN TRỊ VỐN (RISK:REWARD)
+    # Stoploss: Đặt dưới đáy TR 2% để tránh quét râu nến (Shakeout)
+    stop_loss = tr_bottom * 0.98 if tr_bottom else 0
+    
+    rr_ratio = "N/A"
+    if entry_price > 0 and tr_top > entry_price and stop_loss > 0:
+        risk = entry_price - stop_loss
+        reward = tr_top - entry_price
+        if risk > 0:
+            rr = reward / risk
+            rr_ratio = f"1 : {rr:.1f}" # Ví dụ: 1 : 3.5
+            
+    # Định dạng tiền tệ: VNĐ thì không số thập phân, USD thì 2 số
+    ticker = sig.get("Ticker", "")
+    is_vn = ".VN" in ticker
+    
+    data.append({
+        "Ngày": sig.get("Date_Detected", ""),
+        "Mã CK": ticker,
+        "Giá Vào (Entry)": f"{entry_price:,.0f}" if is_vn else f"${entry_price:,.2f}",
+        "Cắt Lỗ (SL)": f"{stop_loss:,.0f}" if is_vn and stop_loss else (f"${stop_loss:,.2f}" if stop_loss else "-"),
+        "Chốt Lời (TP)": f"{tr_top:,.0f}" if is_vn and tr_top else (f"${tr_top:,.2f}" if tr_top else "-"),
+        "Tỷ lệ R:R": rr_ratio,
+        "Tín Hiệu": sig.get("Signal_Type", "")
+    })
+
+# 4. Render Bảng dữ liệu lên Web
+if data:
+    df = pd.DataFrame(data)
+    
+    # CSS Highlight cho cột R:R bằng công cụ của Streamlit
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True
+    )
 else:
-    st.info("Hiện tại chưa có tín hiệu nào được ghi nhận trên cơ sở dữ liệu đám mây.")
+    st.info("Chưa có tín hiệu cạn cung nào được ghi nhận.")
