@@ -95,22 +95,17 @@ class WyckoffVSASignal:
             
         return float(tr_top), float(tr_bottom)
 
-    # TÍNH NĂNG MỚI 1: TÌM ĐIỂM POC (Point of Control) THEO VOLUME PROFILE
     def calculate_poc(self, df, tr_bottom, tr_top):
         try:
-            # Chỉ lấy dữ liệu trong Khung Giá (Trong biên độ)
             tr_data = df[(df['Close'] >= tr_bottom * 0.95) & (df['Close'] <= tr_top * 1.05)].tail(100)
             if tr_data.empty: return None
-            # Phân bổ khối lượng theo mức giá (20 bins)
             bins = np.linspace(tr_bottom * 0.95, tr_top * 1.05, 20)
             tr_data['Price_Bin'] = pd.cut(tr_data['Close'], bins=bins)
             poc_bin = tr_data.groupby('Price_Bin')['Volume'].sum().idxmax()
-            poc_price = poc_bin.mid
-            return round(float(poc_price), 2)
+            return round(float(poc_bin.mid), 2)
         except Exception:
             return None
 
-    # TÍNH NĂNG MỚI 2: TÍNH ATR (Average True Range) CHO TRAILING STOP
     def calculate_atr(self, df, period=14):
         try:
             high_low = df['High'] - df['Low']
@@ -118,8 +113,7 @@ class WyckoffVSASignal:
             low_close = np.abs(df['Low'] - df['Close'].shift())
             ranges = pd.concat([high_low, high_close, low_close], axis=1)
             true_range = np.max(ranges, axis=1)
-            atr = true_range.rolling(period).mean()
-            return round(float(atr.iloc[-1]), 2)
+            return round(float(true_range.rolling(period).mean().iloc[-1]), 2)
         except Exception:
             return 0
 
@@ -152,6 +146,11 @@ class WyckoffVSASignal:
         except: return "Bình thường"
 
     def detect_advanced_signals(self, df, current_price, tr_top, tr_bottom):
+        # TÍNH NĂNG MỚI: BỘ LỌC THANH KHOẢN (Loại bỏ các mã < 100k cp/ngày)
+        vol_avg_20 = df['Volume'].rolling(20).mean().iloc[-1]
+        if vol_avg_20 < 100000:
+            return None
+
         ma_period = self.params.get("vol_ma_period", 20)
         vol_ratio = self.params.get("spring_vol_ratio", 0.5)
         tolerance = self.params.get("spring_price_tolerance", 1.05)
@@ -192,8 +191,7 @@ class FirestoreManager:
 def send_telegram_alert(bot_token, chat_id, text):
     try:
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-        requests.post(url, json=payload, timeout=5)
+        requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=5)
     except Exception: pass
 
 if __name__ == "__main__":
@@ -215,11 +213,9 @@ if __name__ == "__main__":
     start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
     vsa_engine = WyckoffVSASignal(sys_params)
     
-    # Chuẩn bị gửi Telegram nếu được cài đặt
     tele_doc = db.collection("system_config").document("telegram").get()
     tele_config = tele_doc.to_dict() if tele_doc.exists else {}
-    bot_token = tele_config.get("bot_token", "")
-    chat_id = tele_config.get("chat_id", "")
+    bot_token, chat_id = tele_config.get("bot_token", ""), tele_config.get("chat_id", "")
     alert_messages = []
 
     for ticker in my_portfolio:
@@ -239,33 +235,33 @@ if __name__ == "__main__":
                     weekly_trend = vsa_engine.check_weekly_trend(df)
                     vsa_tags = vsa_engine.get_vsa_tags(df)
                     
-                    # TÍNH TOÁN CÁC BIẾN SỐ PRO MỚI
                     atr_val = vsa_engine.calculate_atr(df)
                     poc_val = vsa_engine.calculate_poc(df, tr_bottom, tr_top)
                     trailing_stop = round(current_price - (1.5 * atr_val), 2) if atr_val else 0
 
-                    # TÍNH ĐIỂM RATING TOÀN DIỆN (MAX 100)
-                    rating = 50 # Điểm gốc
-                    if rs_score > 0: rating += min(rs_score, 20) # Tối đa +20 điểm từ RS
+                    # TÍNH NĂNG MỚI: CHỐT LỜI TỪNG PHẦN (TP1 & TP2)
+                    tp1 = round(current_price + (tr_top - current_price) * 0.5, 2)
+                    tp2 = round(tr_top, 2)
+
+                    rating = 50
+                    if rs_score > 0: rating += min(rs_score, 20)
                     if weekly_trend == "TĂNG (Uptrend)": rating += 15
                     if "No Supply" in vsa_tags or "Stopping Vol" in vsa_tags: rating += 15
-                    rating = int(min(max(rating, 0), 100)) # Chặn trong mức 0-100
+                    rating = int(min(max(rating, 0), 100))
 
                     signal_data = {
                         "Date_Detected": df.index[-1].strftime('%Y-%m-%d'), "Ticker": ticker, "Price": float(current_price),
                         "Signal_Type": signal_type, "TR_Top": float(tr_top), "TR_Bottom": float(tr_bottom), "RS_Score": rs_score,
-                        "Weekly_Trend": weekly_trend, "VSA_Tags": vsa_tags,
-                        "Rating_Score": rating, "Trailing_Stop": trailing_stop, "POC_Level": poc_val,
+                        "Weekly_Trend": weekly_trend, "VSA_Tags": vsa_tags, "Rating_Score": rating, 
+                        "Trailing_Stop": trailing_stop, "POC_Level": poc_val, 
+                        "Take_Profit_1": tp1, "Take_Profit_2": tp2, # Dữ liệu chốt lời
                         "Status": "Mới phát hiện", "Timestamp": firestore.SERVER_TIMESTAMP
                     }
                     db_manager.push_signal(signal_data)
 
-                    # Lưu vào danh sách cảnh báo
                     if "Mua" in signal_type and rating >= 70:
-                        alert_messages.append(f"🟢 <b>{ticker}</b> ({signal_type})\nGiá: {current_price} | Điểm: {rating}/100\nCắt lỗ ATR: {trailing_stop}")
+                        alert_messages.append(f"🟢 <b>{ticker}</b> ({signal_type})\nGiá: {current_price} | Điểm: {rating}/100\nCắt lỗ: {trailing_stop}\nChốt lời: {tp1} - {tp2}")
         except: pass
 
-    # Bắn Cảnh Báo Telegram
     if bot_token and chat_id and alert_messages:
-        final_msg = "🚀 <b>WYCKOFF RADAR PRO PHÁT HIỆN</b>\n\n" + "\n\n".join(alert_messages)
-        send_telegram_alert(bot_token, chat_id, final_msg)
+        send_telegram_alert(bot_token, chat_id, "🚀 <b>WYCKOFF RADAR PRO</b>\n\n" + "\n\n".join(alert_messages))
