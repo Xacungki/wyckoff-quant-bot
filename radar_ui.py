@@ -118,8 +118,6 @@ if not df_signals.empty:
     col1.metric("Tổng Tín Hiệu Phát Hiện", len(df_signals))
     col2.metric("Ngày Cập Nhật Gần Nhất", df_signals['Date_Detected'].iloc[0])
     
-    st.write("### Danh sách Báo cáo Chi tiết")
-    # Hiển thị bảng dữ liệu toàn màn hình
     import pandas as pd # Đảm bảo dòng này có ở đầu file
 
 # ... (các phần kết nối db ở trên giữ nguyên) ...
