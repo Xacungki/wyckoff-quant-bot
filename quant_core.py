@@ -4,56 +4,64 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import time
 import warnings
-from vnstock import stock_historical_data
 
-# Tắt các cảnh báo rác của thư viện
+# Tắt cảnh báo rác
 warnings.filterwarnings('ignore')
 
+# ---------------------------------------------------------
+# LỚP GIÁP BẢO VỆ: KIỂM TRA THƯ VIỆN DỮ LIỆU
+# ---------------------------------------------------------
+try:
+    from vnstock import stock_historical_data
+    VNSTOCK_AVAILABLE = True
+except ImportError:
+    VNSTOCK_AVAILABLE = False
+
+import yfinance as yf
+
 # ==========================================
-# KHỐI 1: LẤY DỮ LIỆU TỪ CHỨNG KHOÁN VIỆT NAM (VNSTOCK)
+# KHỐI 1: LẤY DỮ LIỆU (TỰ ĐỘNG CHUYỂN ĐỔI VNSTOCK <-> YFINANCE)
 # ==========================================
 class QuantDataFetcher:
     def __init__(self, ticker):
-        # Làm sạch mã cổ phiếu (Xóa bỏ các đuôi .VN, .HM của Yahoo cũ)
-        self.base_ticker = str(ticker).upper().replace(".VN", "").replace(".HM", "").replace(".HN", "").replace(".UP", "").strip()
+        self.original_ticker = str(ticker).upper().strip()
+        self.base_ticker = self.original_ticker.replace(".VN", "").replace(".HM", "").replace(".HN", "").replace(".UP", "")
 
     def fetch_daily_data(self, start_date, end_date):
-        try:
-            # vnstock kéo dữ liệu trực tiếp từ các CTCK Việt Nam (Chuẩn 100%, không bị mù)
-            df = stock_historical_data(symbol=self.base_ticker, 
-                                       start_date=start_date, 
-                                       end_date=end_date, 
-                                       resolution='1D', 
-                                       type='stock')
-            
-            if df is not None and not df.empty and len(df) > 10:
-                # Đổi tên cột cho khớp với tiêu chuẩn của hệ thống Wyckoff
-                df = df.rename(columns={
-                    'time': 'Date',
-                    'open': 'Open',
-                    'high': 'High',
-                    'low': 'Low',
-                    'close': 'Close',
-                    'volume': 'Volume'
-                })
+        # 1. THỬ DÙNG VNSTOCK TRƯỚC (DỮ LIỆU CHUẨN VIỆT NAM)
+        if VNSTOCK_AVAILABLE:
+            try:
+                df = stock_historical_data(symbol=self.base_ticker, start_date=start_date, end_date=end_date, resolution='1D', type='stock')
+                if df is not None and not df.empty and len(df) > 10:
+                    df = df.rename(columns={'time': 'Date', 'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'})
+                    df['Date'] = pd.to_datetime(df['Date'])
+                    df.set_index('Date', inplace=True)
+                    clean_df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+                    clean_df = clean_df[clean_df['Volume'] > 0]
+                    if len(clean_df) > 50:
+                        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+                            clean_df[col] = pd.to_numeric(clean_df[col], errors='coerce')
+                        return clean_df
+            except Exception as e:
+                pass # Bỏ qua lỗi để chạy phương án 2
+
+        # 2. PHƯƠNG ÁN DỰ PHÒNG TỰ ĐỘNG: DÙNG YFINANCE NẾU VNSTOCK LỖI
+        suffixes = [".HM", ".HN", ".UP", ""]
+        for suffix in suffixes:
+            yf_ticker = f"{self.base_ticker}{suffix}"
+            try:
+                df = yf.download(yf_ticker, start=start_date, end=end_date, interval="1d", auto_adjust=False, progress=False)
+                if df is not None and not df.empty and len(df) > 10:
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df.columns = df.columns.get_level_values(0)
+                    if 'Close' in df.columns:
+                        clean_df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+                        clean_df = clean_df[clean_df['Volume'] > 0]
+                        if len(clean_df) > 50:
+                            return clean_df
+            except Exception:
+                continue
                 
-                # Chuyển đổi cột Date thành Index
-                df['Date'] = pd.to_datetime(df['Date'])
-                df.set_index('Date', inplace=True)
-                
-                # LỌC RÁC: Loại bỏ các ngày nghỉ, lễ không có thanh khoản
-                clean_df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
-                clean_df = clean_df[clean_df['Volume'] > 0]
-                
-                # Đảm bảo có đủ 50 phiên để phân tích
-                if len(clean_df) > 50:
-                    # Fix lỗi kiểu dữ liệu
-                    for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
-                        clean_df[col] = pd.to_numeric(clean_df[col], errors='coerce')
-                    return clean_df
-        except Exception as e:
-            print(f"Lỗi khi kéo dữ liệu {self.base_ticker}: {e}")
-            
         return None
 
 # ==========================================
@@ -81,7 +89,6 @@ class WyckoffVSASignal:
         sc_index = df.index.get_loc(sc_date)
         
         tr_bottom = df['Low'].iloc[sc_index:min(sc_index+4, len(df))].min()
-        
         if sc_index + 15 < len(df):
             tr_top = df['High'].iloc[sc_index+1:sc_index+16].max()
         else:
@@ -129,7 +136,6 @@ class WyckoffVSASignal:
         latest_low = float(df['Low'].iloc[-1])
         latest_close = float(df['Close'].iloc[-1])
 
-        # Tính toán tín hiệu dựa theo biên độ giá & Volume
         if (tr_bottom * 0.80) <= current_price <= (tr_bottom * tolerance) and latest_vol < (latest_sma * vol_ratio):
             return "Spring (Mua)"
         if (tr_top * 0.95) <= current_price <= (tr_top * 1.05) and latest_vol < (latest_sma * vol_ratio):
@@ -177,7 +183,7 @@ if __name__ == "__main__":
     
     for ticker in my_portfolio:
         try:
-            time.sleep(0.1) # vnstock rất mạnh, chỉ cần nghỉ 0.1s là đủ
+            time.sleep(0.1)
             fetcher = QuantDataFetcher(ticker)
             df = fetcher.fetch_daily_data(start_date, end_date)
             
